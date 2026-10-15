@@ -19,8 +19,12 @@ sourceSets.main.resources {
 }
 
 repositories {
-    // Simple Voice Chat's own maven repo will be added here once Phase 1 (see
-    // context/design-document.md) confirms the real API artifact coordinate/version for MC 26.1.2.
+    // Simple Voice Chat API -- confirmed coordinate/repo, see gradle.properties.
+    maven { url = 'https://maven.maxhenkel.de/repository/public' }
+    // Modrinth's maven proxy -- hosts the real runtime SVC mod jar (with FML metadata), needed so
+    // runClient/runServer/test dev environments all have a real mod satisfying the voicechat_api
+    // hard dependency below, not just the api-only compile jar.
+    maven { url = 'https://api.modrinth.com/maven' }
 }
 
 base {
@@ -74,8 +78,10 @@ neoForge {
 }
 
 dependencies {
-    // Simple Voice Chat API dependency goes here once Phase 1 confirms the real coordinate -- not
-    // wired yet, see context/design-document.md.
+    implementation "de.maxhenkel.voicechat:voicechat-api:${voicechat_api_version}"
+    // The real SVC mod jar, for runClient/runServer/test dev environments only -- never shipped
+    // inside Audyble's own jar, players install SVC themselves as usual.
+    runtimeOnly "maven.modrinth:simple-voice-chat:neoforge-${voicechat_mod_version}"
 
     testImplementation 'org.junit.jupiter:junit-jupiter:5.7.1'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'

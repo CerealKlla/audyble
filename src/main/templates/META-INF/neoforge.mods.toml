@@ -31,11 +31,13 @@ voice.
     side="BOTH"
 
 # Hard dependency on Simple Voice Chat -- this mod has no voice transport of its own, it intercepts
-# and reprocesses SVC's own audio pipeline. The real version range isn't pinned yet (Phase 1 work,
-# see context/design-document.md), left unbounded for now.
+# and reprocesses SVC's own audio pipeline. Depends on "voicechat_api", not "voicechat" directly --
+# that's the dedicated sub-mod-id SVC itself exposes (since its API module's own version 2.6.0) so
+# addons can version against the API surface rather than the exact installed SVC build.
 [[dependencies.${mod_id}]]
-    modId="voicechat"
+    modId="voicechat_api"
     type="required"
     reason="Audyble has no voice transport of its own -- it intercepts and reprocesses Simple Voice Chat's own audio pipeline per listener."
-    ordering="NONE"
+    versionRange="[2.6.0,)"
+    ordering="AFTER"
     side="BOTH"
