@@ -1,0 +1,41 @@
+license="${mod_license}"
+
+[[mods]] #mandatory
+
+modId="${mod_id}" #mandatory
+
+version="${mod_version}" #mandatory
+
+displayName="${mod_name}" #mandatory
+
+description='''
+Advanced positional/acoustic voice chat, built on top of Simple Voice Chat as the underlying voice
+transport. Lets per-listener audio treatment (muffling, attenuation, occlusion, radio filtering,
+complete muting, etc.) be driven by Minecraft world geometry and gameplay state -- walls, distance,
+equipment, status effects -- rather than every listener hearing an identical copy of a speaker's
+voice.
+'''
+
+[[dependencies.${mod_id}]] #optional
+    modId="neoforge" #mandatory
+    type="required" #mandatory
+    versionRange="[${neo_version},)" #mandatory
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.${mod_id}]]
+    modId="minecraft"
+    type="required"
+    versionRange="${minecraft_version_range}"
+    ordering="NONE"
+    side="BOTH"
+
+# Hard dependency on Simple Voice Chat -- this mod has no voice transport of its own, it intercepts
+# and reprocesses SVC's own audio pipeline. The real version range isn't pinned yet (Phase 1 work,
+# see context/design-document.md), left unbounded for now.
+[[dependencies.${mod_id}]]
+    modId="voicechat"
+    type="required"
+    reason="Audyble has no voice transport of its own -- it intercepts and reprocesses Simple Voice Chat's own audio pipeline per listener."
+    ordering="NONE"
+    side="BOTH"
