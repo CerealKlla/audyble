@@ -78,6 +78,14 @@ neoForge {
 }
 
 dependencies {
+
+    // Nuclyus is a required foundation dependency (see neoforge.mods.toml) -- hard-imported by
+    // every mod in the suite for shared base classes/contracts, starting with the cross-mod menu-
+    // contribution system. Sibling repo, not published anywhere -- run ../Nuclyus's own build (or
+    // the suite's sync-mods.sh) at least once before building this project.
+    compileOnly files("../Nuclyus/build/libs/nuclyus-${nuclyus_version}.jar")
+    testCompileOnly files("../Nuclyus/build/libs/nuclyus-${nuclyus_version}.jar")
+    testRuntimeOnly files("../Nuclyus/build/libs/nuclyus-${nuclyus_version}.jar")
     implementation "de.maxhenkel.voicechat:voicechat-api:${voicechat_api_version}"
     // The real SVC mod jar, for runClient/runServer/test dev environments only -- never shipped
     // inside Audyble's own jar, players install SVC themselves as usual.

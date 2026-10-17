@@ -41,3 +41,12 @@ voice.
     versionRange="[2.6.0,)"
     ordering="AFTER"
     side="BOTH"
+
+# Nuclyus is the suite's foundation mod -- required (not optional) for every mod, starting with the
+# cross-mod menu-contribution system (see Nuclyus' own CLAUDE.md).
+[[dependencies.${mod_id}]]
+    modId="nuclyus"
+    type="required"
+    reason="Foundation mod for shared base classes/contracts across the suite."
+    ordering="AFTER"
+    side="BOTH"
