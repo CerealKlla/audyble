@@ -69,6 +69,11 @@ public final class AudyblePlugin implements VoicechatPlugin {
     }
 
     private void onEntitySound(EntitySoundPacketEvent event) {
+        // Temporary instrumentation (2026-10-21) -- see AudioDiagnostics' own doc. Recorded before
+        // the SOURCE_PROXIMITY filter below so this captures literally every packet SVC hands us,
+        // regardless of outcome -- the real question right now is "is SVC sending packets at all
+        // while nobody is meaningfully talking," not just how the proximity ones are handled.
+        AudioDiagnostics.recordPacketSeen();
         if (!SoundPacketEvent.SOURCE_PROXIMITY.equals(event.getSource())) {
             return;
         }
@@ -98,8 +103,10 @@ public final class AudyblePlugin implements VoicechatPlugin {
         }
 
         EntitySoundPacket original = event.getPacket();
+        long processStart = System.nanoTime();
         byte[] processedOpus = processor.process(speaker.getUUID(), listener.getUUID(),
                 original.getOpusEncodedData(), treatment);
+        AudioDiagnostics.recordProcess(System.nanoTime() - processStart);
 
         float distance = treatment.distanceOverride() == VoiceTreatment.NO_DISTANCE_OVERRIDE
                 ? original.getDistance()

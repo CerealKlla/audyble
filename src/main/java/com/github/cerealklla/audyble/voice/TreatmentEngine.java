@@ -61,8 +61,11 @@ public final class TreatmentEngine {
         } else if (!AudybleConfig.OCCLUSION_ENABLED.get()) {
             treatment = VoiceTreatment.normal();
         } else {
+            // Temporary instrumentation (2026-10-21) -- see AudioDiagnostics' own doc.
+            long occlusionStart = System.nanoTime();
             int occludingBlocks = AcousticOcclusion.countOccludingBlocks(
                     speaker.level(), speaker.getEyePosition(), listener.getEyePosition());
+            AudioDiagnostics.recordOcclusion(System.nanoTime() - occlusionStart);
             if (GameplayHearing.hasKeenHearing(listener)) {
                 occludingBlocks = Math.max(0, occludingBlocks - AudybleConfig.KEEN_HEARING_BLOCK_BONUS.get());
             }
