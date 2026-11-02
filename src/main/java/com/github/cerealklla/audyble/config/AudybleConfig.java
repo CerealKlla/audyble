@@ -50,6 +50,11 @@ public final class AudybleConfig {
                     + "Leave blank to fall back to Phase 1's placeholder test tone instead.")
             .define("musicSourceDirectory", "");
 
+    public static final ModConfigSpec.BooleanValue SHOW_ARTIST_AND_SONG = BUILDER
+            .comment("When true, show the artist and song name above the health/XP bars for a few "
+                    + "seconds whenever the Murmur Tower a listener is tuned to starts a new song.")
+            .define("showArtistAndSong", true);
+
     // --- Phase 5 (NPC verbal conversation) -- lowest priority, see design-document.md Phase 5.
     // All external services are local/self-hosted; disabled by default until an administrator
     // actually stands them up and points these at them (see context/decisions.md's open items).

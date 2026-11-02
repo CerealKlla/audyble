@@ -48,6 +48,29 @@ final class MusicLibrary {
     private MusicLibrary() {
     }
 
+    /**
+     * Artist/song, parsed from a track's parent folder name -- the Clone Hero chart convention
+     * names every song's own folder {@code "<Artist> - <Song>"} (confirmed directly against a real
+     * library: "+44 - Lycanthrope", "3 Doors Down - Kryptonite", etc.), which is far more reliable
+     * for this library than reading the Ogg file's own Vorbis comment tags would be (most chart
+     * downloads don't bother filling those in). Falls back to the bare filename as the song with an
+     * "Unknown Artist" placeholder for a library that isn't laid out this way.
+     */
+    record TrackInfo(String artist, String song) {
+    }
+
+    static TrackInfo trackInfoFor(Path track) {
+        Path parent = track.getParent();
+        String label = parent != null ? parent.getFileName().toString() : track.getFileName().toString();
+        int separator = label.indexOf(" - ");
+        if (separator > 0) {
+            return new TrackInfo(label.substring(0, separator).trim(), label.substring(separator + 3).trim());
+        }
+        String fileName = track.getFileName().toString();
+        int dot = fileName.lastIndexOf('.');
+        return new TrackInfo("Unknown Artist", dot > 0 ? fileName.substring(0, dot) : fileName);
+    }
+
     /** Picks one random track for the configured source directory, or empty if none is configured/found. */
     static java.util.Optional<Path> pickRandomTrack() {
         String configured = AudybleConfig.MUSIC_SOURCE_DIRECTORY.get();

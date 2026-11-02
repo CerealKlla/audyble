@@ -1,6 +1,5 @@
 package com.github.cerealklla.audyble.voice;
 
-import java.nio.file.Path;
 import java.util.EnumSet;
 import java.util.Map;
 import java.util.Optional;
@@ -48,9 +47,10 @@ import net.neoforged.neoforge.event.tick.ServerTickEvent;
  * later only changes the audio source, not this pipeline.
  *
  * <p>2026-11-02: that swap happened -- {@link AudybleConfig#MUSIC_SOURCE_DIRECTORY}, when set,
- * makes each {@link ListenerSession} stream real decoded Ogg Vorbis audio ({@link MusicLibrary})
- * instead of the tone, falling back to the tone whenever no directory is configured, no track is
- * found, or a decode fails.
+ * makes real decoded Ogg Vorbis audio ({@link MusicLibrary}) play through a shared {@link
+ * MurmurStation} per tower (see that class's own doc -- a real correction the same day: the first
+ * version wrongly tied track selection to each listener instead of the tower itself), falling back
+ * to the tone whenever no directory is configured, no track is found, or a decode fails.
  */
 public final class MurmurCrystalEngine {
 
@@ -90,6 +90,12 @@ public final class MurmurCrystalEngine {
     private volatile VoicechatServerApi api;
     private final Map<UUID, ListenerSession> sessions = new ConcurrentHashMap<>();
 
+    /** One shared, always-ticking-forward broadcast per tower -- see {@link MurmurStation}'s own doc. */
+    private static final Map<StationKey, MurmurStation> STATIONS = new ConcurrentHashMap<>();
+
+    private record StationKey(net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension, BlockPos towerPos) {
+    }
+
     /**
      * Settlements a player has a Murmur-signal-granted minimap waypoint pending arrival for --
      * explicit user request, 2026-11-02: "a self-removing-upon-arrival waypoint... when a player
@@ -116,44 +122,31 @@ public final class MurmurCrystalEngine {
         private double phase;
 
         /**
-         * Real-music playback state (2026-11-02, {@link AudybleConfig#MUSIC_SOURCE_DIRECTORY}) --
-         * {@code null} until a background decode finishes, in which case {@link #nextFrame} falls
-         * back to the Phase 1 placeholder tone (also the permanent behavior when no source
-         * directory is configured at all, since {@link MusicLibrary#pickRandomTrack} then always
-         * returns empty). {@code trackLoading} guards against piling up duplicate decode jobs if
-         * {@link #nextFrame} notices the track has ended several times before the first swap lands.
+         * Which tower's broadcast this listener is currently tuned to -- set in {@link
+         * #refreshPlayer} whenever a signal resolves, never created or advanced by this session
+         * itself (see {@link MurmurStation}'s own doc for why: toggling a crystal on/off must only
+         * start/stop *receiving* the shared broadcast, never affect what it's playing).
          */
-        private volatile short[] trackPcm;
-        private volatile int trackPosition;
-        private volatile boolean trackLoading;
+        volatile MurmurStation station;
+
+        /** The last {@link MurmurStation#trackStartNanos} this listener was shown an announcement for -- see {@link #announceNewTracks}. */
+        volatile long announcedTrackStartNanos;
 
         ListenerSession(StaticAudioChannel channel) {
             this.channel = channel;
         }
 
-        /** Generates the next frame of whatever this session is currently playing, scaled by the current gain. */
+        /** Generates the next frame of whatever this session is currently tuned to, scaled by the current gain. */
         short[] nextFrame() {
-            short[] track = trackPcm;
+            MurmurStation currentStation = station;
             float currentGain = gain;
-            if (track == null) {
-                return placeholderToneFrame(currentGain);
-            }
-            short[] frame = new short[FRAME_SIZE];
-            int pos = trackPosition;
-            for (int i = 0; i < FRAME_SIZE; i++) {
-                if (pos >= track.length) {
-                    requestNextTrack();
-                    pos = 0;
-                    // Nothing more to copy from the now-exhausted track for the rest of this frame --
-                    // silence is correct here, not the placeholder tone, which would click in and out
-                    // mid-frame every time a track ends.
-                    break;
+            if (currentStation != null) {
+                short[] frame = currentStation.currentFrame(currentGain, FRAME_SIZE);
+                if (frame != null) {
+                    return frame;
                 }
-                frame[i] = (short) (track[pos] * currentGain);
-                pos++;
             }
-            trackPosition = pos;
-            return frame;
+            return placeholderToneFrame(currentGain);
         }
 
         /** The Phase 1 placeholder tone -- a running phase accumulator avoids an audible click at each frame boundary. */
@@ -167,30 +160,6 @@ public final class MurmurCrystalEngine {
             phase %= 2.0 * Math.PI;
             return frame;
         }
-
-        private void requestNextTrack() {
-            if (trackLoading) {
-                return;
-            }
-            trackLoading = true;
-            MUSIC_DECODER.submit(() -> {
-                try {
-                    Optional<Path> chosen = MusicLibrary.pickRandomTrack();
-                    if (chosen.isPresent()) {
-                        short[] decoded = MusicLibrary.decodeToMono48k(chosen.get());
-                        trackPcm = decoded;
-                        trackPosition = 0;
-                    } else {
-                        trackPcm = null;
-                    }
-                } catch (Exception e) {
-                    LOGGER.warn("Failed to decode Murmur Crystal music track", e);
-                    trackPcm = null;
-                } finally {
-                    trackLoading = false;
-                }
-            });
-        }
     }
 
     @SubscribeEvent
@@ -199,6 +168,7 @@ public final class MurmurCrystalEngine {
             return;
         }
         MinecraftServer server = event.getServer();
+        announceNewTracks(server);
         if ((server.getTickCount() + TICK_OFFSET) % SCAN_INTERVAL_TICKS != 0) {
             return;
         }
@@ -216,6 +186,41 @@ public final class MurmurCrystalEngine {
             return true;
         });
         pendingArrivals.keySet().removeIf(id -> server.getPlayerList().getPlayer(id) == null);
+    }
+
+    /**
+     * Shows a "<Artist> - <Song>" actionbar message (above the health/XP bars, vanilla's own
+     * fade-after-a-few-seconds behavior, no custom timer needed) to every currently-listening
+     * player whose station just started a track they haven't already been shown -- explicit user
+     * request, 2026-11-02. Runs every tick (not gated behind {@link #SCAN_INTERVAL_TICKS}) so the
+     * announcement fires promptly when a song actually changes, but the check itself is cheap (one
+     * volatile long compare per active listener) regardless.
+     */
+    private void announceNewTracks(MinecraftServer server) {
+        if (!AudybleConfig.SHOW_ARTIST_AND_SONG.get()) {
+            return;
+        }
+        for (Map.Entry<UUID, ListenerSession> entry : sessions.entrySet()) {
+            ListenerSession session = entry.getValue();
+            MurmurStation station = session.station;
+            if (station == null) {
+                continue;
+            }
+            long startNanos = station.trackStartNanos();
+            if (startNanos == 0L || startNanos == session.announcedTrackStartNanos) {
+                continue;
+            }
+            session.announcedTrackStartNanos = startNanos;
+            String artist = station.artist();
+            String song = station.song();
+            if (artist == null || song == null) {
+                continue;
+            }
+            ServerPlayer player = server.getPlayerList().getPlayer(entry.getKey());
+            if (player != null) {
+                player.sendOverlayMessage(net.minecraft.network.chat.Component.literal(artist + " - " + song));
+            }
+        }
     }
 
     /**
@@ -255,6 +260,8 @@ public final class MurmurCrystalEngine {
             return;
         }
         session.gain = strength * state.volume();
+        session.station = STATIONS.computeIfAbsent(new StationKey(playerLevel.dimension(), info.towerPos()),
+                key -> new MurmurStation(MUSIC_DECODER));
 
         if (LyfeKnowledgeBridge.isLoaded() && info.tier() >= 3) {
             boolean firstKnowledge = !LyfeKnowledgeBridge.hasAnyKnowledge(player, info.settlementPlaceId());
@@ -347,7 +354,6 @@ public final class MurmurCrystalEngine {
         channel.addTarget(connection);
         OpusEncoder encoder = currentApi.createEncoder();
         ListenerSession session = new ListenerSession(channel);
-        session.requestNextTrack(); // Kick off the first real-music decode, if a source directory is configured.
         AudioPlayer audioPlayer = currentApi.createAudioPlayer(channel, encoder, session::nextFrame);
         session.player = audioPlayer;
         audioPlayer.setOnStopped(encoder::close);
