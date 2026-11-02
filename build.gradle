@@ -25,6 +25,9 @@ repositories {
     // runClient/runServer/test dev environments all have a real mod satisfying the voicechat_api
     // hard dependency below, not just the api-only compile jar.
     maven { url = 'https://api.modrinth.com/maven' }
+    // Maven Central -- hosts the com.googlecode.soundlibs:* Ogg Vorbis decode libraries (plain
+    // Java, not Minecraft-related at all), 2026-11-02.
+    mavenCentral()
 }
 
 base {
@@ -100,6 +103,22 @@ dependencies {
     // The real SVC mod jar, for runClient/runServer/test dev environments only -- never shipped
     // inside Audyble's own jar, players install SVC themselves as usual.
     runtimeOnly "maven.modrinth:simple-voice-chat:neoforge-${voicechat_mod_version}"
+
+    // Ogg Vorbis decode for the Murmur Crystal's real-music source directory (2026-11-02) -- a
+    // plain Java SPI plugin for javax.sound.sampled, not a Minecraft/NeoForge-aware library at
+    // all, so (unlike SVC above) it has no other way to reach a player's game install and must be
+    // embedded directly into this mod's own jar via the real "jarJar" Configuration this version
+    // of ModDevGradle registers (confirmed via javap against the actual plugin jar -- there's no
+    // `.ranged()`/version-range DSL on this version, just a plain non-transitive Configuration
+    // that needs each library listed explicitly). These are tiny, pure-Java, no native component.
+    // No separate "jogg" artifact exists on Maven Central (confirmed directly, not assumed) --
+    // soundlibs' real jorbis build bundles JCraft's jogg classes into the one jar.
+    implementation "com.googlecode.soundlibs:vorbisspi:1.0.3.3"
+    implementation "com.googlecode.soundlibs:jorbis:0.0.17.4"
+    implementation "com.googlecode.soundlibs:tritonus-share:0.3.7.4"
+    jarJar "com.googlecode.soundlibs:vorbisspi:1.0.3.3"
+    jarJar "com.googlecode.soundlibs:jorbis:0.0.17.4"
+    jarJar "com.googlecode.soundlibs:tritonus-share:0.3.7.4"
 
     testImplementation 'org.junit.jupiter:junit-jupiter:5.7.1'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'

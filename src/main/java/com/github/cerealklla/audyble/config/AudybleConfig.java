@@ -41,6 +41,15 @@ public final class AudybleConfig {
             .comment("Master switch for the Murmur Crystal item (design-document.md Phase 6).")
             .define("murmurCrystalEnabled", true);
 
+    public static final ModConfigSpec.ConfigValue<String> MUSIC_SOURCE_DIRECTORY = BUILDER
+            .comment("Absolute path to a directory of music to play through the Murmur Crystal, "
+                    + "searched recursively -- a random track is picked each time a listener starts, "
+                    + "and again whenever one finishes. Supports .ogg (Vorbis) files; subfolders "
+                    + "containing a file literally named 'song.ogg' (the Clone Hero chart convention) "
+                    + "play that file specifically rather than any other stem in the same folder. "
+                    + "Leave blank to fall back to Phase 1's placeholder test tone instead.")
+            .define("musicSourceDirectory", "");
+
     // --- Phase 5 (NPC verbal conversation) -- lowest priority, see design-document.md Phase 5.
     // All external services are local/self-hosted; disabled by default until an administrator
     // actually stands them up and points these at them (see context/decisions.md's open items).

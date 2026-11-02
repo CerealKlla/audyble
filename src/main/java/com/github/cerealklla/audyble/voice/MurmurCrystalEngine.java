@@ -1,10 +1,13 @@
 package com.github.cerealklla.audyble.voice;
 
+import java.nio.file.Path;
 import java.util.EnumSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import com.github.cerealklla.audyble.bridge.LyfeKnowledgeBridge;
 import com.github.cerealklla.audyble.bridge.SettlemyntsMurmurBridge;
@@ -43,6 +46,11 @@ import net.neoforged.neoforge.event.tick.ServerTickEvent;
  * <p>Phase 1 scope, explicit user confirmation: plays a real placeholder tone through this actual
  * pipeline (not silent plumbing) -- proves the mechanism end-to-end now; swapping in real music
  * later only changes the audio source, not this pipeline.
+ *
+ * <p>2026-11-02: that swap happened -- {@link AudybleConfig#MUSIC_SOURCE_DIRECTORY}, when set,
+ * makes each {@link ListenerSession} stream real decoded Ogg Vorbis audio ({@link MusicLibrary})
+ * instead of the tone, falling back to the tone whenever no directory is configured, no track is
+ * found, or a decode fails.
  */
 public final class MurmurCrystalEngine {
 
@@ -69,6 +77,15 @@ public final class MurmurCrystalEngine {
 
     /** How close counts as "arrived," clearing the waypoint -- see {@link #pendingArrivals}' own doc. */
     private static final double ARRIVAL_THRESHOLD_BLOCKS = 30.0;
+
+    private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger("audyble-music");
+
+    /** Off the server tick thread -- real file I/O + Vorbis decode, see {@link MusicLibrary#decodeToMono48k}. Daemon so it never blocks JVM shutdown. */
+    private static final ExecutorService MUSIC_DECODER = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "Audyble-Music-Decoder");
+        t.setDaemon(true);
+        return t;
+    });
 
     private volatile VoicechatServerApi api;
     private final Map<UUID, ListenerSession> sessions = new ConcurrentHashMap<>();
@@ -98,21 +115,81 @@ public final class MurmurCrystalEngine {
         volatile float gain;
         private double phase;
 
+        /**
+         * Real-music playback state (2026-11-02, {@link AudybleConfig#MUSIC_SOURCE_DIRECTORY}) --
+         * {@code null} until a background decode finishes, in which case {@link #nextFrame} falls
+         * back to the Phase 1 placeholder tone (also the permanent behavior when no source
+         * directory is configured at all, since {@link MusicLibrary#pickRandomTrack} then always
+         * returns empty). {@code trackLoading} guards against piling up duplicate decode jobs if
+         * {@link #nextFrame} notices the track has ended several times before the first swap lands.
+         */
+        private volatile short[] trackPcm;
+        private volatile int trackPosition;
+        private volatile boolean trackLoading;
+
         ListenerSession(StaticAudioChannel channel) {
             this.channel = channel;
         }
 
-        /** Generates the next frame of the placeholder tone, scaled by the current gain -- a running phase accumulator avoids an audible click at each frame boundary. */
+        /** Generates the next frame of whatever this session is currently playing, scaled by the current gain. */
         short[] nextFrame() {
+            short[] track = trackPcm;
+            float currentGain = gain;
+            if (track == null) {
+                return placeholderToneFrame(currentGain);
+            }
+            short[] frame = new short[FRAME_SIZE];
+            int pos = trackPosition;
+            for (int i = 0; i < FRAME_SIZE; i++) {
+                if (pos >= track.length) {
+                    requestNextTrack();
+                    pos = 0;
+                    // Nothing more to copy from the now-exhausted track for the rest of this frame --
+                    // silence is correct here, not the placeholder tone, which would click in and out
+                    // mid-frame every time a track ends.
+                    break;
+                }
+                frame[i] = (short) (track[pos] * currentGain);
+                pos++;
+            }
+            trackPosition = pos;
+            return frame;
+        }
+
+        /** The Phase 1 placeholder tone -- a running phase accumulator avoids an audible click at each frame boundary. */
+        private short[] placeholderToneFrame(float currentGain) {
             short[] frame = new short[FRAME_SIZE];
             double step = 2.0 * Math.PI * TONE_HZ / SAMPLE_RATE;
-            float currentGain = gain;
             for (int i = 0; i < FRAME_SIZE; i++) {
                 frame[i] = (short) (Math.sin(phase) * Short.MAX_VALUE * currentGain * 0.3);
                 phase += step;
             }
             phase %= 2.0 * Math.PI;
             return frame;
+        }
+
+        private void requestNextTrack() {
+            if (trackLoading) {
+                return;
+            }
+            trackLoading = true;
+            MUSIC_DECODER.submit(() -> {
+                try {
+                    Optional<Path> chosen = MusicLibrary.pickRandomTrack();
+                    if (chosen.isPresent()) {
+                        short[] decoded = MusicLibrary.decodeToMono48k(chosen.get());
+                        trackPcm = decoded;
+                        trackPosition = 0;
+                    } else {
+                        trackPcm = null;
+                    }
+                } catch (Exception e) {
+                    LOGGER.warn("Failed to decode Murmur Crystal music track", e);
+                    trackPcm = null;
+                } finally {
+                    trackLoading = false;
+                }
+            });
         }
     }
 
@@ -270,6 +347,7 @@ public final class MurmurCrystalEngine {
         channel.addTarget(connection);
         OpusEncoder encoder = currentApi.createEncoder();
         ListenerSession session = new ListenerSession(channel);
+        session.requestNextTrack(); // Kick off the first real-music decode, if a source directory is configured.
         AudioPlayer audioPlayer = currentApi.createAudioPlayer(channel, encoder, session::nextFrame);
         session.player = audioPlayer;
         audioPlayer.setOnStopped(encoder::close);
