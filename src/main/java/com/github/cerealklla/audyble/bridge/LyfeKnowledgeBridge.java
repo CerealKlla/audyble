@@ -40,4 +40,23 @@ public final class LyfeKnowledgeBridge {
                     EnumSet.of(com.github.cerealklla.lyfe.knowledge.KnowledgeFactor.POSITION));
         }
     }
+
+    /** {@code true} if {@code player} already has any {@code knowledge.KnowledgeFactor} for {@code placeId} -- used to detect a brand-new grant (call before {@link #grantTowerKnowledge}) vs. re-confirming something already known. */
+    public static boolean hasAnyKnowledge(ServerPlayer player, long placeId) {
+        return com.github.cerealklla.lyfe.api.Lyfe.getKnownFactorCount(player, placeId) > 0;
+    }
+
+    /**
+     * Points {@code player}'s minimap/Map-screen waypoint at {@code pos} -- same shared single-slot
+     * system Myssions' own quest hints use ({@code api.Lyfe#setQuestWaypoint}), so setting one here
+     * will replace an active Myssions quest waypoint and vice versa (a known, accepted limitation --
+     * there's only ever one such slot per player in Lyfe today).
+     */
+    public static void setSettlementWaypoint(ServerPlayer player, Level level, BlockPos pos, double radiusBlocks) {
+        com.github.cerealklla.lyfe.api.Lyfe.setQuestWaypoint(player, level.dimension(), pos, radiusBlocks);
+    }
+
+    public static void clearWaypoint(ServerPlayer player) {
+        com.github.cerealklla.lyfe.api.Lyfe.clearQuestWaypoint(player);
+    }
 }

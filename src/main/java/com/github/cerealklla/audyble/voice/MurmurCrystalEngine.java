@@ -67,8 +67,26 @@ public final class MurmurCrystalEngine {
     private static final int SCAN_INTERVAL_TICKS = 100; // 5 real seconds at 20 TPS.
     private static final int TICK_OFFSET = 40;
 
+    /** How close counts as "arrived," clearing the waypoint -- see {@link #pendingArrivals}' own doc. */
+    private static final double ARRIVAL_THRESHOLD_BLOCKS = 30.0;
+
     private volatile VoicechatServerApi api;
     private final Map<UUID, ListenerSession> sessions = new ConcurrentHashMap<>();
+
+    /**
+     * Settlements a player has a Murmur-signal-granted minimap waypoint pending arrival for --
+     * explicit user request, 2026-11-02: "a self-removing-upon-arrival waypoint... when a player
+     * gains partial knowledge of a settlement via the radio signal." Set the instant a player's
+     * knowledge of a settlement goes from none to something (see {@link #refreshPlayer}'s own
+     * {@code LyfeKnowledgeBridge.hasAnyKnowledge} check), independent of whether they're still
+     * holding/listening to a crystal at the time -- checked every scan for every online player (not
+     * just crystal holders), so the waypoint still clears on arrival even if the crystal's been put
+     * away or walked out of range since it was granted.
+     */
+    private final Map<UUID, WaypointTarget> pendingArrivals = new ConcurrentHashMap<>();
+
+    private record WaypointTarget(net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension, BlockPos pos) {
+    }
 
     public void onServerStarted(VoicechatServerApi api) {
         this.api = api;
@@ -120,6 +138,7 @@ public final class MurmurCrystalEngine {
             stopSession(id);
             return true;
         });
+        pendingArrivals.keySet().removeIf(id -> server.getPlayerList().getPlayer(id) == null);
     }
 
     /**
@@ -140,6 +159,7 @@ public final class MurmurCrystalEngine {
         if (!(player.level() instanceof net.minecraft.server.level.ServerLevel playerLevel)) {
             return;
         }
+        checkWaypointArrival(player, playerLevel);
         MurmurCrystalState state = readState(player);
         Optional<SettlemyntsMurmurBridge.MurmurSignalInfo> signal = state != null && state.active() && SettlemyntsMurmurBridge.isLoaded()
                 ? SettlemyntsMurmurBridge.findNearestMurmurSignal(playerLevel, player.blockPosition())
@@ -160,7 +180,30 @@ public final class MurmurCrystalEngine {
         session.gain = strength * state.volume();
 
         if (LyfeKnowledgeBridge.isLoaded() && info.tier() >= 3) {
+            boolean firstKnowledge = !LyfeKnowledgeBridge.hasAnyKnowledge(player, info.settlementPlaceId());
             LyfeKnowledgeBridge.grantTowerKnowledge(player, info.settlementPlaceId(), player.level(), info.towerPos(), info.tier());
+            if (firstKnowledge) {
+                double radius = info.tier() >= 5 ? 0.0 : info.tier() == 4 ? 150.0 : 300.0;
+                LyfeKnowledgeBridge.setSettlementWaypoint(player, player.level(), info.towerPos(), radius);
+                pendingArrivals.put(player.getUUID(), new WaypointTarget(playerLevel.dimension(), info.towerPos()));
+            }
+        }
+    }
+
+    /** Clears a pending Murmur-signal waypoint once the player gets within {@link #ARRIVAL_THRESHOLD_BLOCKS} of it, in the same dimension. */
+    private void checkWaypointArrival(ServerPlayer player, net.minecraft.server.level.ServerLevel playerLevel) {
+        WaypointTarget target = pendingArrivals.get(player.getUUID());
+        if (target == null) {
+            return;
+        }
+        if (!target.dimension().equals(playerLevel.dimension())) {
+            return;
+        }
+        if (Math.sqrt(player.blockPosition().distSqr(target.pos())) <= ARRIVAL_THRESHOLD_BLOCKS) {
+            pendingArrivals.remove(player.getUUID());
+            if (LyfeKnowledgeBridge.isLoaded()) {
+                LyfeKnowledgeBridge.clearWaypoint(player);
+            }
         }
     }
 
