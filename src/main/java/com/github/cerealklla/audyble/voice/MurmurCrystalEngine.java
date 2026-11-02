@@ -18,6 +18,7 @@ import de.maxhenkel.voicechat.api.VoicechatServerApi;
 import de.maxhenkel.voicechat.api.audiochannel.AudioPlayer;
 import de.maxhenkel.voicechat.api.audiochannel.StaticAudioChannel;
 import de.maxhenkel.voicechat.api.opus.OpusEncoder;
+import de.maxhenkel.voicechat.api.opus.OpusEncoderMode;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.MinecraftServer;
@@ -38,9 +39,11 @@ import net.neoforged.neoforge.event.tick.ServerTickEvent;
  * microphone or any world position, unlike {@code EntityAudioChannel}. One unscoped channel per
  * actively-listening player (via {@code createStaticAudioChannel(UUID)}, then {@code
  * addTarget(connection)}), so delivery is scoped to exactly that one holder, never broadcast.
- * Playback mechanics ({@code createEncoder()} -> {@code createAudioPlayer(channel, encoder, pcm)}
- * -> {@code startPlaying()}) mirror {@code NpcConversationEngine#playOnNpc}'s already-proven
- * template, just swapping the channel type.
+ * Playback mechanics ({@code createEncoder(OpusEncoderMode.AUDIO)} -> {@code
+ * createAudioPlayer(channel, encoder, pcm)} -> {@code startPlaying()}) mirror {@code
+ * NpcConversationEngine#playOnNpc}'s already-proven template, just swapping the channel type and
+ * the encoder mode (real music needs {@code AUDIO}, not the speech-tuned {@code VOIP} default --
+ * see {@link #startSession}'s own comment).
  *
  * <p>Phase 1 scope, explicit user confirmation: plays a real placeholder tone through this actual
  * pipeline (not silent plumbing) -- proves the mechanism end-to-end now; swapping in real music
@@ -352,7 +355,13 @@ public final class MurmurCrystalEngine {
             return null;
         }
         channel.addTarget(connection);
-        OpusEncoder encoder = currentApi.createEncoder();
+        // AUDIO mode, not the no-arg default (VOIP -- confirmed via javap against the real
+        // voicechat-api-2.6.20 jar, a de.maxhenkel.voicechat.api.opus.OpusEncoderMode enum with
+        // VOIP/AUDIO/RESTRICTED_LOWDELAY) -- real user report, 2026-11-02: "a ton of distortion"
+        // on a known-good test file. VOIP is the right choice for NpcConversationEngine's actual
+        // speech, but Opus's voice-tuned bitrate/bandwidth profile mangles real music badly; AUDIO
+        // is the general-purpose music-appropriate mode.
+        OpusEncoder encoder = currentApi.createEncoder(OpusEncoderMode.AUDIO);
         ListenerSession session = new ListenerSession(channel);
         AudioPlayer audioPlayer = currentApi.createAudioPlayer(channel, encoder, session::nextFrame);
         session.player = audioPlayer;
