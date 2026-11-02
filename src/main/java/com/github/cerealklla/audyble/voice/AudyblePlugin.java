@@ -58,6 +58,10 @@ public final class AudyblePlugin implements VoicechatPlugin {
         if (npcEngine != null) {
             npcEngine.onServerStarted(event.getVoicechat());
         }
+        MurmurCrystalEngine murmurEngine = MurmurCrystalEngine.instance();
+        if (murmurEngine != null) {
+            murmurEngine.onServerStarted(event.getVoicechat());
+        }
         AudybleMod.LOGGER.info("Audyble voice engine ready");
     }
 

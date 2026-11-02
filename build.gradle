@@ -86,6 +86,16 @@ dependencies {
     compileOnly files("../Nuclyus/build/libs/nuclyus-${nuclyus_version}.jar")
     testCompileOnly files("../Nuclyus/build/libs/nuclyus-${nuclyus_version}.jar")
     testRuntimeOnly files("../Nuclyus/build/libs/nuclyus-${nuclyus_version}.jar")
+
+    // Settlemynts and Lyfe are optional soft dependencies (Murmur Crystal feature, 2026-11-02) --
+    // see bridge.SettlemyntsMurmurBridge/bridge.LyfeKnowledgeBridge, the only two classes allowed
+    // to reference their types directly, gated behind ModList.get().isLoaded(...) at runtime, same
+    // isolation pattern Settlemynts' own optional deps (Lyfe/Myssions/etc.) already use.
+    // compileOnly only -- testCompileOnly/testRuntimeOnly would pull Settlemynts' own hard
+    // Cartographyr dependency into this mod's plain-JUnit test classpath for no reason.
+    compileOnly files("../Settlemynts/build/libs/settlemynts-${settlemynts_version}.jar")
+    compileOnly files("../Lyfe/build/libs/lyfe-${lyfe_version}.jar")
+
     implementation "de.maxhenkel.voicechat:voicechat-api:${voicechat_api_version}"
     // The real SVC mod jar, for runClient/runServer/test dev environments only -- never shipped
     // inside Audyble's own jar, players install SVC themselves as usual.

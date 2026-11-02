@@ -37,6 +37,10 @@ public final class AudybleConfig {
                     + "falloff doesn't reduce volume further.")
             .defineInRange("radioRange", 512.0, 16.0, 100000.0);
 
+    public static final ModConfigSpec.BooleanValue MURMUR_CRYSTAL_ENABLED = BUILDER
+            .comment("Master switch for the Murmur Crystal item (design-document.md Phase 6).")
+            .define("murmurCrystalEnabled", true);
+
     // --- Phase 5 (NPC verbal conversation) -- lowest priority, see design-document.md Phase 5.
     // All external services are local/self-hosted; disabled by default until an administrator
     // actually stands them up and points these at them (see context/decisions.md's open items).

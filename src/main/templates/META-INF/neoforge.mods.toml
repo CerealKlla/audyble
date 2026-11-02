@@ -50,3 +50,22 @@ voice.
     reason="Foundation mod for shared base classes/contracts across the suite."
     ordering="AFTER"
     side="BOTH"
+
+# Optional dependencies for the Murmur Crystal feature (2026-11-02) -- no versionRange on either
+# (an empty string there is an invalid range that makes FML reject an installed mod outright, not
+# "accept any version"), and ordering="NONE" rather than "AFTER" to avoid a dependency-cycle crash
+# if the other side ever declares "AFTER" back (same gotcha already documented in Settlemynts' own
+# neoforge.mods.toml).
+[[dependencies.${mod_id}]]
+    modId="settlemynts"
+    type="optional"
+    reason="Finds a nearby settlement's Murmur Tower signal for the Murmur Crystal item to pick up."
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.${mod_id}]]
+    modId="lyfe"
+    type="optional"
+    reason="Grants Cartographyr-skill location knowledge to a player listening to a Tier 3+ Murmur Tower."
+    ordering="NONE"
+    side="BOTH"

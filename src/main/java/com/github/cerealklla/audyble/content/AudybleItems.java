@@ -1,6 +1,7 @@
 package com.github.cerealklla.audyble.content;
 
 import com.github.cerealklla.audyble.AudybleMod;
+import com.github.cerealklla.audyble.voice.MurmurCrystalItem;
 
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
@@ -25,4 +26,13 @@ public final class AudybleItems {
     public static final DeferredItem<Item> RADIO = ITEMS.register(
             "radio",
             id -> new Item(new Item.Properties().stacksTo(1).setId(ResourceKey.create(Registries.ITEM, id))));
+
+    /**
+     * Picks up a nearby settlement's Murmur Tower signal (design-document.md Phase 6, 2026-11-02) --
+     * a genuinely separate mechanic from {@link #RADIO} above (that's Phase 4's player-to-player
+     * walkie-talkie hook), not a rename/repurpose of it.
+     */
+    public static final DeferredItem<MurmurCrystalItem> MURMUR_CRYSTAL = ITEMS.register(
+            "murmur_crystal",
+            id -> new MurmurCrystalItem(new Item.Properties().stacksTo(1).setId(ResourceKey.create(Registries.ITEM, id))));
 }
