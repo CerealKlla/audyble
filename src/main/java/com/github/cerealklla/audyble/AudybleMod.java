@@ -74,6 +74,9 @@ public class AudybleMod {
                         var held = serverPlayer.getMainHandItem();
                         if (!held.isEmpty() && held.getItem() instanceof com.github.cerealklla.audyble.voice.MurmurCrystalItem) {
                             held.set(ModDataComponents.MURMUR_CRYSTAL_STATE.get(), payload.state());
+                            // Apply the toggle/volume change immediately instead of waiting on the
+                            // engine's own periodic scan (up to 5 real seconds) to notice it.
+                            MurmurCrystalEngine.instance().refreshPlayer(serverPlayer);
                         }
                     }
                 });

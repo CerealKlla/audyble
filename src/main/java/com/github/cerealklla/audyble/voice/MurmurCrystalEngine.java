@@ -100,8 +100,7 @@ public final class MurmurCrystalEngine {
 
     @SubscribeEvent
     public void onServerTick(ServerTickEvent.Post event) {
-        VoicechatServerApi currentApi = api;
-        if (currentApi == null || !AudybleConfig.MURMUR_CRYSTAL_ENABLED.get()) {
+        if (api == null || !AudybleConfig.MURMUR_CRYSTAL_ENABLED.get()) {
             return;
         }
         MinecraftServer server = event.getServer();
@@ -110,31 +109,7 @@ public final class MurmurCrystalEngine {
         }
 
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-            if (!(player.level() instanceof net.minecraft.server.level.ServerLevel playerLevel)) {
-                continue;
-            }
-            MurmurCrystalState state = readState(player);
-            Optional<SettlemyntsMurmurBridge.MurmurSignalInfo> signal = state != null && state.active() && SettlemyntsMurmurBridge.isLoaded()
-                    ? SettlemyntsMurmurBridge.findNearestMurmurSignal(playerLevel, player.blockPosition())
-                    : Optional.empty();
-
-            if (signal.isEmpty()) {
-                stopSession(player.getUUID());
-                continue;
-            }
-
-            SettlemyntsMurmurBridge.MurmurSignalInfo info = signal.get();
-            float strength = signalStrength(player.blockPosition(), info);
-            ListenerSession session = sessions.computeIfAbsent(player.getUUID(),
-                    id -> startSession(currentApi, player));
-            if (session == null) {
-                continue;
-            }
-            session.gain = strength * state.volume();
-
-            if (LyfeKnowledgeBridge.isLoaded() && info.tier() >= 3) {
-                LyfeKnowledgeBridge.grantTowerKnowledge(player, info.settlementPlaceId(), player.level(), info.towerPos(), info.tier());
-            }
+            refreshPlayer(player);
         }
 
         // Anyone who logged out since the last scan never gets a stopSession call above -- clean up here.
@@ -145,6 +120,48 @@ public final class MurmurCrystalEngine {
             stopSession(id);
             return true;
         });
+    }
+
+    /**
+     * Re-evaluates one player's own listening state right now -- range/signal/gain, same logic
+     * {@link #onServerTick}'s periodic scan runs for everyone, just immediately for one player
+     * instead of waiting up to {@link #SCAN_INTERVAL_TICKS} ticks (5 real seconds). Called from
+     * {@code AudybleMod}'s {@code SetMurmurCrystalStatePayload} handler right after a GUI toggle/
+     * volume change is written onto the item, per explicit user feedback, 2026-11-02: flipping the
+     * switch should take effect immediately, not on the next periodic tick. The periodic scan still
+     * does the actual range-change detection (walking in/out of range) -- there's no practical event
+     * to hook for that, so it stays polled; only the GUI-triggered case needed to stop waiting on it.
+     */
+    public void refreshPlayer(ServerPlayer player) {
+        VoicechatServerApi currentApi = api;
+        if (currentApi == null || !AudybleConfig.MURMUR_CRYSTAL_ENABLED.get()) {
+            return;
+        }
+        if (!(player.level() instanceof net.minecraft.server.level.ServerLevel playerLevel)) {
+            return;
+        }
+        MurmurCrystalState state = readState(player);
+        Optional<SettlemyntsMurmurBridge.MurmurSignalInfo> signal = state != null && state.active() && SettlemyntsMurmurBridge.isLoaded()
+                ? SettlemyntsMurmurBridge.findNearestMurmurSignal(playerLevel, player.blockPosition())
+                : Optional.empty();
+
+        if (signal.isEmpty()) {
+            stopSession(player.getUUID());
+            return;
+        }
+
+        SettlemyntsMurmurBridge.MurmurSignalInfo info = signal.get();
+        float strength = signalStrength(player.blockPosition(), info);
+        ListenerSession session = sessions.computeIfAbsent(player.getUUID(),
+                id -> startSession(currentApi, player));
+        if (session == null) {
+            return;
+        }
+        session.gain = strength * state.volume();
+
+        if (LyfeKnowledgeBridge.isLoaded() && info.tier() >= 3) {
+            LyfeKnowledgeBridge.grantTowerKnowledge(player, info.settlementPlaceId(), player.level(), info.towerPos(), info.tier());
+        }
     }
 
     /**
