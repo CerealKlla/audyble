@@ -55,6 +55,14 @@ public final class AudybleConfig {
                     + "seconds whenever the Murmur Tower a listener is tuned to starts a new song.")
             .define("showArtistAndSong", true);
 
+    public static final ModConfigSpec.ConfigValue<String> DEBUG_FORCE_TRACK_FILENAME = BUILDER
+            .comment("Debug/testing only: when set, every Murmur Tower always plays this one file "
+                    + "instead of picking randomly -- matched by filename only (not a full path, e.g. "
+                    + "'song.ogg' or 'My Band - My Song.ogg'), case-insensitive, searched recursively "
+                    + "under musicSourceDirectory. Takes effect immediately, even on an already-playing "
+                    + "station. Leave blank for normal random playback.")
+            .define("debugForceTrackFilename", "");
+
     // --- Phase 5 (NPC verbal conversation) -- lowest priority, see design-document.md Phase 5.
     // All external services are local/self-hosted; disabled by default until an administrator
     // actually stands them up and points these at them (see context/decisions.md's open items).

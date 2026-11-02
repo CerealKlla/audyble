@@ -71,7 +71,13 @@ final class MusicLibrary {
         return new TrackInfo("Unknown Artist", dot > 0 ? fileName.substring(0, dot) : fileName);
     }
 
-    /** Picks one random track for the configured source directory, or empty if none is configured/found. */
+    /**
+     * Picks one track for the configured source directory, or empty if none is configured/found.
+     * Normally random; but see {@link AudybleConfig#DEBUG_FORCE_TRACK_FILENAME} -- when set, this
+     * always returns the matching file instead (or empty, logging a warning, if no file under the
+     * source directory has that filename), so a specific known-good file can be played on demand to
+     * isolate a decode/pipeline issue from a source-file issue.
+     */
     static java.util.Optional<Path> pickRandomTrack() {
         String configured = AudybleConfig.MUSIC_SOURCE_DIRECTORY.get();
         if (configured == null || configured.isBlank()) {
@@ -80,6 +86,18 @@ final class MusicLibrary {
         List<Path> tracks = tracksFor(configured);
         if (tracks.isEmpty()) {
             return java.util.Optional.empty();
+        }
+        String forced = AudybleConfig.DEBUG_FORCE_TRACK_FILENAME.get();
+        if (forced != null && !forced.isBlank()) {
+            java.util.Optional<Path> match = tracks.stream()
+                    .filter(p -> p.getFileName().toString().equalsIgnoreCase(forced))
+                    .findFirst();
+            if (match.isEmpty()) {
+                LOGGER.warn("Murmur Crystal debugForceTrackFilename '{}' was not found under the music "
+                        + "source directory -- falling back to the placeholder tone instead of silently "
+                        + "picking a random track, so this isn't mistaken for the forced file", forced);
+            }
+            return match;
         }
         return java.util.Optional.of(tracks.get(ThreadLocalRandom.current().nextInt(tracks.size())));
     }

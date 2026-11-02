@@ -4,6 +4,8 @@ import java.nio.file.Path;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 
+import com.github.cerealklla.audyble.config.AudybleConfig;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -35,6 +37,7 @@ final class MurmurStation {
     private volatile boolean loading;
     private volatile String currentArtist;
     private volatile String currentSong;
+    private volatile Path currentTrackPath;
 
     MurmurStation(ExecutorService decoder) {
         this.decoder = decoder;
@@ -48,6 +51,7 @@ final class MurmurStation {
      * the background" -- a listener arriving mid-song starts mid-song, same as a real radio.
      */
     short[] currentFrame(float gain, int frameSize) {
+        applyDebugOverrideIfNeeded();
         short[] track = trackPcm;
         if (track != null) {
             long elapsedNanos = System.nanoTime() - trackStartNanos;
@@ -96,6 +100,7 @@ final class MurmurStation {
                     short[] decoded = MusicLibrary.decodeToMono48k(chosen.get());
                     MusicLibrary.TrackInfo info = MusicLibrary.trackInfoFor(chosen.get());
                     trackPcm = decoded;
+                    currentTrackPath = chosen.get();
                     currentArtist = info.artist();
                     currentSong = info.song();
                     trackStartNanos = System.nanoTime();
@@ -111,5 +116,23 @@ final class MurmurStation {
                 loading = false;
             }
         });
+    }
+
+    /**
+     * Debug/testing only, see {@link AudybleConfig#DEBUG_FORCE_TRACK_FILENAME} -- if a forced
+     * filename is configured and doesn't match what this station is currently playing, discards the
+     * current track so the very next {@link #currentFrame} call kicks off loading the forced one
+     * immediately, instead of waiting for whatever's currently playing to run out on its own.
+     */
+    private void applyDebugOverrideIfNeeded() {
+        String forced = AudybleConfig.DEBUG_FORCE_TRACK_FILENAME.get();
+        if (forced == null || forced.isBlank()) {
+            return;
+        }
+        Path current = currentTrackPath;
+        if (current != null && current.getFileName().toString().equalsIgnoreCase(forced)) {
+            return;
+        }
+        trackPcm = null;
     }
 }
