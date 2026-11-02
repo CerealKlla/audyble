@@ -147,12 +147,40 @@ public final class MurmurCrystalEngine {
         });
     }
 
+    /**
+     * Finds the first active Murmur Crystal anywhere on the player -- main hand, off hand, or
+     * carried in their inventory -- not just the one actively held. Real user feedback, 2026-11-02:
+     * there's no reason it should need to be wielded to keep playing once toggled on, any more than
+     * a pocketed radio would. {@link SetMurmurCrystalStatePayload}'s handler still only ever writes
+     * to the main-hand stack, since the GUI itself can only ever be opened while holding one -- this
+     * only widens where the engine looks for an already-toggled-on crystal afterward.
+     */
     private static MurmurCrystalState readState(ServerPlayer player) {
-        ItemStack held = player.getMainHandItem();
-        if (held.isEmpty() || !held.has(ModDataComponents.MURMUR_CRYSTAL_STATE.get())) {
+        MurmurCrystalState mainHand = stateOf(player.getMainHandItem());
+        if (mainHand != null && mainHand.active()) {
+            return mainHand;
+        }
+        MurmurCrystalState offHand = stateOf(player.getOffhandItem());
+        if (offHand != null && offHand.active()) {
+            return offHand;
+        }
+        var inventory = player.getInventory();
+        for (int i = 0; i < inventory.getContainerSize(); i++) {
+            MurmurCrystalState state = stateOf(inventory.getItem(i));
+            if (state != null && state.active()) {
+                return state;
+            }
+        }
+        // Nothing active anywhere -- fall back to the main-hand stack's own state (even if inactive,
+        // or null if it's not a crystal at all) so the caller's existing "active()" check still works.
+        return mainHand;
+    }
+
+    private static MurmurCrystalState stateOf(ItemStack stack) {
+        if (stack.isEmpty() || !stack.has(ModDataComponents.MURMUR_CRYSTAL_STATE.get())) {
             return null;
         }
-        return held.get(ModDataComponents.MURMUR_CRYSTAL_STATE.get());
+        return stack.get(ModDataComponents.MURMUR_CRYSTAL_STATE.get());
     }
 
     /** Clean inside {@link #STATIC_THRESHOLD_FRACTION} of max range, ramping linearly to {@link #VOLUME_FLOOR} at the edge -- same linear-falloff-with-floor shape as {@code AcousticOcclusion#treatmentFor}, reused for consistency rather than new math. */
