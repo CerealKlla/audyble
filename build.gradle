@@ -120,6 +120,14 @@ dependencies {
     jarJar "com.googlecode.soundlibs:jorbis:0.0.17.4"
     jarJar "com.googlecode.soundlibs:tritonus-share:0.3.7.4"
 
+    // MP3 decode, same treatment as the Ogg Vorbis SPI above (2026-11-02) -- real library test
+    // files aren't guaranteed to be .ogg, so the music source directory needs to handle .mp3 too.
+    // Both artifacts confirmed to exist on Maven Central directly (not assumed) before adding.
+    implementation "com.googlecode.soundlibs:mp3spi:1.9.5.4"
+    implementation "com.googlecode.soundlibs:jlayer:1.0.1.4"
+    jarJar "com.googlecode.soundlibs:mp3spi:1.9.5.4"
+    jarJar "com.googlecode.soundlibs:jlayer:1.0.1.4"
+
     testImplementation 'org.junit.jupiter:junit-jupiter:5.7.1'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }

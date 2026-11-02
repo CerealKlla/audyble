@@ -25,9 +25,10 @@ import org.slf4j.LoggerFactory;
 /**
  * Scans {@link AudybleConfig#MUSIC_SOURCE_DIRECTORY} for real music to play through the Murmur
  * Crystal (replacing {@link MurmurCrystalEngine}'s Phase 1 placeholder tone when configured),
- * and decodes a chosen Ogg Vorbis file to mono 48kHz PCM via the bundled {@code vorbisspi}
- * {@code javax.sound.sampled} SPI plugin (jarJar-embedded, see build.gradle -- a plain Java
- * library with no other way to reach a player's install).
+ * and decodes a chosen Ogg Vorbis or MP3 file to mono 48kHz PCM via the bundled {@code vorbisspi}/
+ * {@code mp3spi} {@code javax.sound.sampled} SPI plugins (jarJar-embedded, see build.gradle --
+ * plain Java libraries with no other way to reach a player's install; MP3 support added
+ * 2026-11-02 once a real test file turned out not to be Ogg).
  *
  * <p>Built around the Clone Hero "Songs" folder convention (each song is its own subfolder
  * containing several isolated stem files -- {@code guitar.ogg}, {@code drums_1.ogg},
@@ -114,12 +115,16 @@ final class MusicLibrary {
         return scanned;
     }
 
+    /** Extensions this library can actually decode -- {@link #decodeToMono48k}'s SPI plugins (vorbisspi, mp3spi). */
+    private static final List<String> SUPPORTED_EXTENSIONS = List.of(".ogg", ".mp3");
+
     /**
      * Recursively finds playable tracks: within any folder that contains a file literally named
-     * {@code song.ogg} (case-insensitive), that one file is the folder's track and its sibling
-     * stems are skipped; any other folder contributes every {@code .ogg} file it directly
-     * contains. Not a recursive merge across subfolders beyond that -- a folder with its own
-     * {@code song.ogg} doesn't also contribute its parent's unrelated files, and vice versa.
+     * {@code song.ogg} or {@code song.mp3} (case-insensitive), that one file is the folder's track
+     * and its sibling stems are skipped; any other folder contributes every supported-extension
+     * file it directly contains. Not a recursive merge across subfolders beyond that -- a folder
+     * with its own {@code song.*} doesn't also contribute its parent's unrelated files, and vice
+     * versa.
      */
     private static List<Path> scan(Path root) {
         List<Path> result = new ArrayList<>();
@@ -131,14 +136,14 @@ final class MusicLibrary {
             Files.walkFileTree(root, new SimpleFileVisitor<>() {
                 @Override
                 public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                    Path songDotOgg = findCaseInsensitive(dir, "song.ogg");
-                    if (songDotOgg != null) {
-                        result.add(songDotOgg);
+                    Path songFile = findSongFile(dir);
+                    if (songFile != null) {
+                        result.add(songFile);
                         return FileVisitResult.CONTINUE;
                     }
                     try (var stream = Files.list(dir)) {
                         stream.filter(p -> !Files.isDirectory(p))
-                                .filter(p -> p.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".ogg"))
+                                .filter(p -> hasSupportedExtension(p.getFileName().toString()))
                                 .forEach(result::add);
                     } catch (IOException e) {
                         LOGGER.warn("Failed to list music directory {}", dir, e);
@@ -153,10 +158,18 @@ final class MusicLibrary {
         return result;
     }
 
-    private static Path findCaseInsensitive(Path dir, String name) {
+    private static boolean hasSupportedExtension(String fileName) {
+        String lower = fileName.toLowerCase(java.util.Locale.ROOT);
+        return SUPPORTED_EXTENSIONS.stream().anyMatch(lower::endsWith);
+    }
+
+    private static Path findSongFile(Path dir) {
         try (var stream = Files.list(dir)) {
             return stream.filter(p -> !Files.isDirectory(p))
-                    .filter(p -> p.getFileName().toString().equalsIgnoreCase(name))
+                    .filter(p -> {
+                        String lower = p.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
+                        return SUPPORTED_EXTENSIONS.stream().anyMatch(ext -> lower.equals("song" + ext));
+                    })
                     .findFirst()
                     .orElse(null);
         } catch (IOException e) {
@@ -164,7 +177,7 @@ final class MusicLibrary {
         }
     }
 
-    /** Fully decodes one Ogg Vorbis file to mono 48kHz 16-bit PCM. Slow (real file I/O + decode) -- always call off the server tick thread. */
+    /** Fully decodes one Ogg Vorbis or MP3 file to mono 48kHz 16-bit PCM. Slow (real file I/O + decode) -- always call off the server tick thread. */
     static short[] decodeToMono48k(Path file) throws Exception {
         try (AudioInputStream rawIn = AudioSystem.getAudioInputStream(file.toFile())) {
             AudioFormat baseFormat = rawIn.getFormat();

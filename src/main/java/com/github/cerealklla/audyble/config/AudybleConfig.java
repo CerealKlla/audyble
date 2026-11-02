@@ -44,10 +44,11 @@ public final class AudybleConfig {
     public static final ModConfigSpec.ConfigValue<String> MUSIC_SOURCE_DIRECTORY = BUILDER
             .comment("Absolute path to a directory of music to play through the Murmur Crystal, "
                     + "searched recursively -- a random track is picked each time a listener starts, "
-                    + "and again whenever one finishes. Supports .ogg (Vorbis) files; subfolders "
-                    + "containing a file literally named 'song.ogg' (the Clone Hero chart convention) "
-                    + "play that file specifically rather than any other stem in the same folder. "
-                    + "Leave blank to fall back to Phase 1's placeholder test tone instead.")
+                    + "and again whenever one finishes. Supports .ogg (Vorbis) and .mp3 files; "
+                    + "subfolders containing a file literally named 'song.ogg' or 'song.mp3' (the "
+                    + "Clone Hero chart convention) play that file specifically rather than any other "
+                    + "stem in the same folder. Leave blank to fall back to Phase 1's placeholder test "
+                    + "tone instead.")
             .define("musicSourceDirectory", "");
 
     public static final ModConfigSpec.BooleanValue SHOW_ARTIST_AND_SONG = BUILDER
