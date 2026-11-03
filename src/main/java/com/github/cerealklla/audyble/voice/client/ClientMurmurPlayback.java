@@ -5,6 +5,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -57,6 +59,12 @@ public final class ClientMurmurPlayback {
 
     private static final ClientMusicCache CACHE = new ClientMusicCache();
     private static final Map<String, short[]> DECODED = new ConcurrentHashMap<>();
+    private static final Set<String> DECODING = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final ExecutorService DECODER = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "Audyble-Murmur-Decode");
+        t.setDaemon(true);
+        return t;
+    });
     private static final AtomicReference<TunedIn> TUNED_IN = new AtomicReference<>();
     private static volatile Thread playbackThread;
     private static volatile SourceDataLine line;
@@ -84,7 +92,7 @@ public final class ClientMurmurPlayback {
             return;
         }
         for (String trackId : payload.trackIds()) {
-            CACHE.ensureDownloading(trackId, host, payload.httpPort());
+            ensureDecodedAsync(trackId, host, payload.httpPort());
         }
     }
 
@@ -96,9 +104,9 @@ public final class ClientMurmurPlayback {
         TUNED_IN.set(new TunedIn(payload.trackId(), payload.artist(), payload.song(), payload.secondsIntoTrack(),
                 System.nanoTime(), payload.upcomingTrackIds(), host, payload.httpPort(), payload.towerPos(), payload.maxRangeBlocks()));
 
-        CACHE.ensureDownloading(payload.trackId(), host, payload.httpPort());
+        ensureDecodedAsync(payload.trackId(), host, payload.httpPort());
         for (String trackId : payload.upcomingTrackIds()) {
-            CACHE.ensureDownloading(trackId, host, payload.httpPort());
+            ensureDecodedAsync(trackId, host, payload.httpPort());
         }
         Set<String> keep = new HashSet<>(payload.upcomingTrackIds());
         keep.add(payload.trackId());
@@ -182,24 +190,43 @@ public final class ClientMurmurPlayback {
         }
     }
 
+    /**
+     * Never blocks -- a cache hit returns immediately, a miss kicks off {@link #ensureDecodedAsync}
+     * in the background and returns {@code null} for this call (the caller plays silence for this
+     * one chunk and tries again ~100ms later). Real bug fixed 2026-11-02, "the music is still
+     * stuttery": this used to decode synchronously right here, on the same thread responsible for
+     * continuously feeding {@link #line} -- decoding a multi-minute file can take real time, and
+     * every second spent decoding was a second not spent writing to the audio line, starving it.
+     */
     private static short[] decodedTrackOrNull(String trackId, String host, int httpPort) {
         short[] cached = DECODED.get(trackId);
-        if (cached != null) {
-            return cached;
+        if (cached == null) {
+            ensureDecodedAsync(trackId, host, httpPort);
+        }
+        return cached;
+    }
+
+    /** Kicks off a background download/decode for {@code trackId} if it isn't already cached or in flight -- safe to call redundantly every chunk/tick. */
+    private static void ensureDecodedAsync(String trackId, String host, int httpPort) {
+        if (DECODED.containsKey(trackId) || !DECODING.add(trackId)) {
+            return;
         }
         var localPath = CACHE.localPathIfPresent(trackId);
         if (localPath == null) {
             CACHE.ensureDownloading(trackId, host, httpPort);
-            return null;
+            DECODING.remove(trackId);
+            return;
         }
-        try {
-            short[] decoded = MusicLibrary.decodeToMono48k(localPath);
-            DECODED.put(trackId, decoded);
-            return decoded;
-        } catch (Exception e) {
-            LOGGER.warn("Failed to decode downloaded Murmur Crystal track {}", trackId, e);
-            return null;
-        }
+        DECODER.submit(() -> {
+            try {
+                short[] decoded = MusicLibrary.decodeToMono48k(localPath);
+                DECODED.put(trackId, decoded);
+            } catch (Exception e) {
+                LOGGER.warn("Failed to decode downloaded Murmur Crystal track {}", trackId, e);
+            } finally {
+                DECODING.remove(trackId);
+            }
+        });
     }
 
     private static void ensureLineOpen() {
