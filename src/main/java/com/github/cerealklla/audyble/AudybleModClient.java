@@ -1,6 +1,7 @@
 package com.github.cerealklla.audyble;
 
 import com.github.cerealklla.audyble.voice.client.ClientMurmurCrystalRequest;
+import com.github.cerealklla.audyble.voice.client.ClientMurmurPlayback;
 import com.github.cerealklla.audyble.voice.client.MurmurCrystalScreen;
 
 import net.minecraft.client.Minecraft;
@@ -28,5 +29,6 @@ public class AudybleModClient {
                 Minecraft.getInstance().setScreen(new MurmurCrystalScreen(state));
             }
         });
+        ClientMurmurPlayback.tick();
     }
 }

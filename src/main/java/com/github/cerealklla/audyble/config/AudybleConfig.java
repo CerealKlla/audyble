@@ -56,6 +56,20 @@ public final class AudybleConfig {
                     + "seconds whenever the Murmur Tower a listener is tuned to starts a new song.")
             .define("showArtistAndSong", true);
 
+    public static final ModConfigSpec.IntValue MUSIC_HTTP_PORT = BUILDER
+            .comment("Port for the small embedded HTTP server (2026-11-02 rework) that lets clients "
+                    + "download Murmur Tower station tracks directly, for fully local client-side "
+                    + "playback instead of relaying through Simple Voice Chat's lossy Opus codec. "
+                    + "Read-only, serves only files under musicSourceDirectory. Clients connect to "
+                    + "this port on the same host they used for the Minecraft connection itself.")
+            .defineInRange("musicHttpPort", 25690, 1, 65535);
+
+    public static final ModConfigSpec.DoubleValue MUSIC_PREFETCH_RANGE_MULTIPLIER = BUILDER
+            .comment("How far past a Murmur Tower's real audible range (maxRangeBlocks) a listener "
+                    + "should start pre-downloading that station's current/upcoming tracks, so "
+                    + "there's no fetch delay once they actually walk into audible range.")
+            .defineInRange("musicPrefetchRangeMultiplier", 1.5, 1.0, 5.0);
+
     public static final ModConfigSpec.ConfigValue<String> DEBUG_FORCE_TRACK_FILENAME = BUILDER
             .comment("Debug/testing only: when set, every Murmur Tower always plays this one file "
                     + "instead of picking randomly -- matched by filename only (not a full path, e.g. "

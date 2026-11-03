@@ -8,6 +8,9 @@ import com.github.cerealklla.audyble.npc.NpcAttachments;
 import com.github.cerealklla.audyble.npc.NpcConversationEngine;
 import com.github.cerealklla.audyble.registration.ModDataComponents;
 import com.github.cerealklla.audyble.voice.MurmurCrystalEngine;
+import com.github.cerealklla.audyble.voice.MurmurPrefetchHintPayload;
+import com.github.cerealklla.audyble.voice.MurmurStopPlaybackPayload;
+import com.github.cerealklla.audyble.voice.MurmurTunedInPayload;
 import com.github.cerealklla.audyble.voice.OpenMurmurCrystalScreenPayload;
 import com.github.cerealklla.audyble.voice.SetMurmurCrystalStatePayload;
 import com.github.cerealklla.audyble.voice.client.ClientMurmurCrystalRequest;
@@ -67,6 +70,15 @@ public class AudybleMod {
         // AudybleModClient), never referenced from this common-sourceset handler.
         registrar.playToClient(OpenMurmurCrystalScreenPayload.TYPE, OpenMurmurCrystalScreenPayload.STREAM_CODEC,
                 (payload, context) -> ClientMurmurCrystalRequest.request(payload.state()));
+
+        registrar.playToClient(MurmurPrefetchHintPayload.TYPE, MurmurPrefetchHintPayload.STREAM_CODEC,
+                (payload, context) -> com.github.cerealklla.audyble.voice.client.ClientMurmurRequests.requestPrefetch(payload));
+
+        registrar.playToClient(MurmurTunedInPayload.TYPE, MurmurTunedInPayload.STREAM_CODEC,
+                (payload, context) -> com.github.cerealklla.audyble.voice.client.ClientMurmurRequests.requestTunedIn(payload));
+
+        registrar.playToClient(MurmurStopPlaybackPayload.TYPE, MurmurStopPlaybackPayload.STREAM_CODEC,
+                (payload, context) -> com.github.cerealklla.audyble.voice.client.ClientMurmurRequests.requestStop());
 
         registrar.playToServer(SetMurmurCrystalStatePayload.TYPE, SetMurmurCrystalStatePayload.STREAM_CODEC,
                 (payload, context) -> {

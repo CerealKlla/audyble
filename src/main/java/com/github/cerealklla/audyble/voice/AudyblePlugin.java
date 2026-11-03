@@ -58,10 +58,9 @@ public final class AudyblePlugin implements VoicechatPlugin {
         if (npcEngine != null) {
             npcEngine.onServerStarted(event.getVoicechat());
         }
-        MurmurCrystalEngine murmurEngine = MurmurCrystalEngine.instance();
-        if (murmurEngine != null) {
-            murmurEngine.onServerStarted(event.getVoicechat());
-        }
+        // MurmurCrystalEngine no longer needs SVC at all (2026-11-02 rework -- Murmur Crystal
+        // playback moved entirely client-side; see that class's own doc). Its HTTP server/station
+        // scheduling now starts from the Minecraft server's own ServerStartedEvent instead.
         AudybleMod.LOGGER.info("Audyble voice engine ready");
     }
 

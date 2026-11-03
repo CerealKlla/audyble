@@ -38,7 +38,7 @@ import org.slf4j.LoggerFactory;
  * approximation of "the song" without it. A source directory that isn't laid out this way still
  * works, just less precisely -- see {@link #scan} for the exact fallback rule.
  */
-final class MusicLibrary {
+public final class MusicLibrary {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("audyble-music");
     private static final int TARGET_SAMPLE_RATE = 48000;
@@ -57,10 +57,10 @@ final class MusicLibrary {
      * downloads don't bother filling those in). Falls back to the bare filename as the song with an
      * "Unknown Artist" placeholder for a library that isn't laid out this way.
      */
-    record TrackInfo(String artist, String song) {
+    public record TrackInfo(String artist, String song) {
     }
 
-    static TrackInfo trackInfoFor(Path track) {
+    public static TrackInfo trackInfoFor(Path track) {
         Path parent = track.getParent();
         String label = parent != null ? parent.getFileName().toString() : track.getFileName().toString();
         int separator = label.indexOf(" - ");
@@ -70,6 +70,57 @@ final class MusicLibrary {
         String fileName = track.getFileName().toString();
         int dot = fileName.lastIndexOf('.');
         return new TrackInfo("Unknown Artist", dot > 0 ? fileName.substring(0, dot) : fileName);
+    }
+
+    /**
+     * A stable id for {@code track}, used both as the HTTP path clients request it by (see {@code
+     * voice.MusicHttpServer}) and the id sent over the network to identify it -- the file's path
+     * relative to the configured music source directory, forward-slash-normalized so it round-trips
+     * identically regardless of the host OS. Inverse of {@link #resolveTrackId}.
+     */
+    public static String trackIdFor(Path track) {
+        String configured = AudybleConfig.MUSIC_SOURCE_DIRECTORY.get();
+        Path root = Paths.get(configured);
+        return root.relativize(track).toString().replace('\\', '/');
+    }
+
+    /**
+     * Resolves a client-supplied {@code trackId} back to a real file under the configured music
+     * source directory, or empty if it doesn't exist -- used by {@code voice.MusicHttpServer} to
+     * serve a request. Deliberately re-validates that the resolved path is still actually inside the
+     * configured root after normalization (rejects any {@code trackId} containing {@code ..} segments
+     * that would otherwise escape it) -- the one real security boundary in this whole feature, since
+     * this id ultimately comes from a network request.
+     */
+    public static java.util.Optional<Path> resolveTrackId(String trackId) {
+        String configured = AudybleConfig.MUSIC_SOURCE_DIRECTORY.get();
+        if (configured == null || configured.isBlank() || trackId == null || trackId.isBlank()) {
+            return java.util.Optional.empty();
+        }
+        Path root = Paths.get(configured).normalize();
+        Path resolved = root.resolve(trackId).normalize();
+        if (!resolved.startsWith(root) || !Files.isRegularFile(resolved)) {
+            return java.util.Optional.empty();
+        }
+        return java.util.Optional.of(resolved);
+    }
+
+    /**
+     * The track's real duration in seconds, read from the file's own header/VBR-index metadata via
+     * {@link AudioSystem#getAudioFileFormat} -- confirmed directly (not assumed) that both vorbisspi
+     * and mp3spi report an accurate frame length/frame rate this way without decoding any actual
+     * audio data, in ~30ms even for a 5-minute file. Needed so {@code MurmurStation} can track when
+     * a track ends and advance its queue without ever decoding anything server-side anymore
+     * (2026-11-02 rework -- playback moved entirely client-side).
+     */
+    public static double probeDurationSeconds(Path file) throws Exception {
+        var format = AudioSystem.getAudioFileFormat(file.toFile());
+        float frameRate = format.getFormat().getFrameRate();
+        int frameLength = format.getFrameLength();
+        if (frameLength <= 0 || frameRate <= 0) {
+            throw new IllegalStateException("Unknown duration (no frame length/rate in file header) for " + file);
+        }
+        return frameLength / (double) frameRate;
     }
 
     /**
@@ -177,8 +228,14 @@ final class MusicLibrary {
         }
     }
 
-    /** Fully decodes one Ogg Vorbis or MP3 file to mono 48kHz 16-bit PCM. Slow (real file I/O + decode) -- always call off the server tick thread. */
-    static short[] decodeToMono48k(Path file) throws Exception {
+    /**
+     * Fully decodes one Ogg Vorbis or MP3 file to mono 48kHz 16-bit PCM. Slow (real file I/O +
+     * decode) -- always call off whichever thread needs the result immediately. Public since the
+     * 2026-11-02 rework moved the only real caller client-side ({@code voice.client
+     * .ClientMurmurPlayback}) -- nothing in this method references any client-only type, so it's
+     * still safe to keep in this common-sourceset class rather than duplicating it.
+     */
+    public static short[] decodeToMono48k(Path file) throws Exception {
         try (AudioInputStream rawIn = AudioSystem.getAudioInputStream(file.toFile())) {
             AudioFormat baseFormat = rawIn.getFormat();
             AudioFormat pcmFormat = new AudioFormat(

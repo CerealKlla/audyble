@@ -1,8 +1,9 @@
 package com.github.cerealklla.audyble.voice;
 
-import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -13,47 +14,36 @@ import com.github.cerealklla.audyble.bridge.SettlemyntsMurmurBridge;
 import com.github.cerealklla.audyble.config.AudybleConfig;
 import com.github.cerealklla.audyble.registration.ModDataComponents;
 
-import de.maxhenkel.voicechat.api.VoicechatConnection;
-import de.maxhenkel.voicechat.api.VoicechatServerApi;
-import de.maxhenkel.voicechat.api.audiochannel.AudioPlayer;
-import de.maxhenkel.voicechat.api.audiochannel.StaticAudioChannel;
-import de.maxhenkel.voicechat.api.opus.OpusEncoder;
-import de.maxhenkel.voicechat.api.opus.OpusEncoderMode;
-
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.ItemStack;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.server.ServerStartedEvent;
+import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
+import net.neoforged.neoforge.network.PacketDistributor;
 
 /**
- * Drives the Murmur Crystal item (design-document.md Phase 6). Deliberately mirrors {@code
- * npc.NpcConversationEngine}'s own {@code init()}/{@code instance()}/{@code onServerStarted}
- * shape -- a {@link VoicechatServerApi} is only ever handed to this mod once, from {@code
- * voice.AudyblePlugin}'s own {@code onServerStarted} hook, and there's no other way to reach it.
+ * Drives the Murmur Crystal item (design-document.md Phase 6).
  *
- * <p>Uses SVC's real {@link StaticAudioChannel} (confirmed directly against the actual
- * {@code voicechat-api-2.6.20} jar via {@code javap}, not guessed) -- not tied to any player's
- * microphone or any world position, unlike {@code EntityAudioChannel}. One unscoped channel per
- * actively-listening player (via {@code createStaticAudioChannel(UUID)}, then {@code
- * addTarget(connection)}), so delivery is scoped to exactly that one holder, never broadcast.
- * Playback mechanics ({@code createEncoder(OpusEncoderMode.AUDIO)} -> {@code
- * createAudioPlayer(channel, encoder, pcm)} -> {@code startPlaying()}) mirror {@code
- * NpcConversationEngine#playOnNpc}'s already-proven template, just swapping the channel type and
- * the encoder mode (real music needs {@code AUDIO}, not the speech-tuned {@code VOIP} default --
- * see {@link #startSession}'s own comment).
+ * <p><b>2026-11-02 rework: no longer touches Simple Voice Chat at all.</b> The original design
+ * relayed decoded music through SVC's Opus codec; a real user report ("a ton of distortion")
+ * traced to Opus's auto-selected bitrate having no exposed control in the plugin API at all
+ * (confirmed by decompiling the real SVC implementation). Fixed by moving playback entirely
+ * client-side instead: this class now only tracks *which* track each {@link MurmurStation} is
+ * playing and broadcasts that (plus a lookahead queue, for prefetching) to in-range listeners --
+ * {@code voice.MusicHttpServer} serves the actual files, and {@code voice.client
+ * .ClientMurmurPlayback} downloads/decodes/plays them locally, computing its own live volume/
+ * static against {@link SignalCurve} every client tick with no network round-trip needed for
+ * that. The GUI (on/off/volume, {@link MurmurCrystalItem}/{@code client.MurmurCrystalScreen}) is
+ * unchanged.
  *
- * <p>Phase 1 scope, explicit user confirmation: plays a real placeholder tone through this actual
- * pipeline (not silent plumbing) -- proves the mechanism end-to-end now; swapping in real music
- * later only changes the audio source, not this pipeline.
- *
- * <p>2026-11-02: that swap happened -- {@link AudybleConfig#MUSIC_SOURCE_DIRECTORY}, when set,
- * makes real decoded Ogg Vorbis audio ({@link MusicLibrary}) play through a shared {@link
- * MurmurStation} per tower (see that class's own doc -- a real correction the same day: the first
- * version wrongly tied track selection to each listener instead of the tower itself), falling back
- * to the tone whenever no directory is configured, no track is found, or a decode fails.
+ * <p>Two radii per signal: a station's real audible range ({@code maxRangeBlocks}) is unchanged;
+ * a wider prefetch radius ({@link AudybleConfig#MUSIC_PREFETCH_RANGE_MULTIPLIER} times that) lets
+ * a client start downloading before it's actually close enough to hear anything, so there's no
+ * fetch delay once it is.
  */
 public final class MurmurCrystalEngine {
 
@@ -63,17 +53,13 @@ public final class MurmurCrystalEngine {
         MurmurCrystalEngine engine = new MurmurCrystalEngine();
         INSTANCE = engine;
         NeoForge.EVENT_BUS.register(engine);
+        NeoForge.EVENT_BUS.addListener((ServerStartedEvent event) -> MusicHttpServer.start());
+        NeoForge.EVENT_BUS.addListener((ServerStoppingEvent event) -> MusicHttpServer.stop());
     }
 
     public static MurmurCrystalEngine instance() {
         return INSTANCE;
     }
-
-    private static final int SAMPLE_RATE = 48000;
-    private static final int FRAME_SIZE = 960; // SVC's AudioPlayer requires exactly 960 samples/frame.
-    private static final double TONE_HZ = 220.0; // Placeholder test tone -- Phase 2 swaps in real music.
-    private static final float VOLUME_FLOOR = 0.1f; // Matches AcousticOcclusion's own floor, reused for consistency.
-    private static final double STATIC_THRESHOLD_FRACTION = 0.9; // Outer 10% of range ramps to the floor.
 
     private static final int SCAN_INTERVAL_TICKS = 100; // 5 real seconds at 20 TPS.
     private static final int TICK_OFFSET = 40;
@@ -83,20 +69,24 @@ public final class MurmurCrystalEngine {
 
     private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger("audyble-music");
 
-    /** Off the server tick thread -- real file I/O + Vorbis decode, see {@link MusicLibrary#decodeToMono48k}. Daemon so it never blocks JVM shutdown. */
-    private static final ExecutorService MUSIC_DECODER = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "Audyble-Music-Decoder");
+    /** Off the server tick thread -- real file I/O + header probing, see {@link MusicLibrary#probeDurationSeconds}. Daemon so it never blocks JVM shutdown. */
+    private static final ExecutorService STATION_WORKER = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "Audyble-Music-Station");
         t.setDaemon(true);
         return t;
     });
 
-    private volatile VoicechatServerApi api;
-    private final Map<UUID, ListenerSession> sessions = new ConcurrentHashMap<>();
-
-    /** One shared, always-ticking-forward broadcast per tower -- see {@link MurmurStation}'s own doc. */
+    /** One shared, always-ticking-forward schedule per tower -- see {@link MurmurStation}'s own doc. */
     private static final Map<StationKey, MurmurStation> STATIONS = new ConcurrentHashMap<>();
 
     private record StationKey(net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension, BlockPos towerPos) {
+    }
+
+    /** Per-player bookkeeping for what's already been sent, so a stop payload fires exactly once on exit. */
+    private final Map<UUID, PlayerMurmurState> states = new ConcurrentHashMap<>();
+
+    private static final class PlayerMurmurState {
+        volatile long announcedTrackStartNanos;
     }
 
     /**
@@ -114,135 +104,47 @@ public final class MurmurCrystalEngine {
     private record WaypointTarget(net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension, BlockPos pos) {
     }
 
-    public void onServerStarted(VoicechatServerApi api) {
-        this.api = api;
-    }
-
-    private static final class ListenerSession {
-        final StaticAudioChannel channel;
-        AudioPlayer player;
-        volatile float gain;
-        private double phase;
-
-        /**
-         * Which tower's broadcast this listener is currently tuned to -- set in {@link
-         * #refreshPlayer} whenever a signal resolves, never created or advanced by this session
-         * itself (see {@link MurmurStation}'s own doc for why: toggling a crystal on/off must only
-         * start/stop *receiving* the shared broadcast, never affect what it's playing).
-         */
-        volatile MurmurStation station;
-
-        /** The last {@link MurmurStation#trackStartNanos} this listener was shown an announcement for -- see {@link #announceNewTracks}. */
-        volatile long announcedTrackStartNanos;
-
-        ListenerSession(StaticAudioChannel channel) {
-            this.channel = channel;
-        }
-
-        /** Generates the next frame of whatever this session is currently tuned to, scaled by the current gain. */
-        short[] nextFrame() {
-            MurmurStation currentStation = station;
-            float currentGain = gain;
-            if (currentStation != null) {
-                short[] frame = currentStation.currentFrame(currentGain, FRAME_SIZE);
-                if (frame != null) {
-                    return frame;
-                }
-            }
-            return placeholderToneFrame(currentGain);
-        }
-
-        /** The Phase 1 placeholder tone -- a running phase accumulator avoids an audible click at each frame boundary. */
-        private short[] placeholderToneFrame(float currentGain) {
-            short[] frame = new short[FRAME_SIZE];
-            double step = 2.0 * Math.PI * TONE_HZ / SAMPLE_RATE;
-            for (int i = 0; i < FRAME_SIZE; i++) {
-                frame[i] = (short) (Math.sin(phase) * Short.MAX_VALUE * currentGain * 0.3);
-                phase += step;
-            }
-            phase %= 2.0 * Math.PI;
-            return frame;
-        }
-    }
-
     @SubscribeEvent
     public void onServerTick(ServerTickEvent.Post event) {
-        if (api == null || !AudybleConfig.MURMUR_CRYSTAL_ENABLED.get()) {
+        if (!AudybleConfig.MURMUR_CRYSTAL_ENABLED.get()) {
             return;
         }
         MinecraftServer server = event.getServer();
-        announceNewTracks(server);
         if ((server.getTickCount() + TICK_OFFSET) % SCAN_INTERVAL_TICKS != 0) {
             return;
         }
 
+        Set<UUID> stillActive = new HashSet<>();
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-            refreshPlayer(player);
+            if (refreshPlayer(player)) {
+                stillActive.add(player.getUUID());
+            }
         }
 
-        // Anyone who logged out since the last scan never gets a stopSession call above -- clean up here.
-        sessions.keySet().removeIf(id -> {
-            if (server.getPlayerList().getPlayer(id) != null) {
+        states.keySet().removeIf(id -> {
+            if (stillActive.contains(id) && server.getPlayerList().getPlayer(id) != null) {
                 return false;
             }
-            stopSession(id);
+            states.remove(id);
             return true;
         });
         pendingArrivals.keySet().removeIf(id -> server.getPlayerList().getPlayer(id) == null);
     }
 
     /**
-     * Shows a "<Artist> - <Song>" actionbar message (above the health/XP bars, vanilla's own
-     * fade-after-a-few-seconds behavior, no custom timer needed) to every currently-listening
-     * player whose station just started a track they haven't already been shown -- explicit user
-     * request, 2026-11-02. Runs every tick (not gated behind {@link #SCAN_INTERVAL_TICKS}) so the
-     * announcement fires promptly when a song actually changes, but the check itself is cheap (one
-     * volatile long compare per active listener) regardless.
+     * Re-evaluates one player's own listening state right now -- range/signal, same logic {@link
+     * #onServerTick}'s periodic scan runs for everyone, just immediately for one player instead of
+     * waiting up to {@link #SCAN_INTERVAL_TICKS} ticks (5 real seconds). Called from {@code
+     * AudybleMod}'s {@code SetMurmurCrystalStatePayload} handler right after a GUI toggle/volume
+     * change is written onto the item. Returns whether the player is currently prefetching or tuned
+     * in to anything (used by {@link #onServerTick} to know when to clean up/send a stop).
      */
-    private void announceNewTracks(MinecraftServer server) {
-        if (!AudybleConfig.SHOW_ARTIST_AND_SONG.get()) {
-            return;
-        }
-        for (Map.Entry<UUID, ListenerSession> entry : sessions.entrySet()) {
-            ListenerSession session = entry.getValue();
-            MurmurStation station = session.station;
-            if (station == null) {
-                continue;
-            }
-            long startNanos = station.trackStartNanos();
-            if (startNanos == 0L || startNanos == session.announcedTrackStartNanos) {
-                continue;
-            }
-            session.announcedTrackStartNanos = startNanos;
-            String artist = station.artist();
-            String song = station.song();
-            if (artist == null || song == null) {
-                continue;
-            }
-            ServerPlayer player = server.getPlayerList().getPlayer(entry.getKey());
-            if (player != null) {
-                player.sendOverlayMessage(net.minecraft.network.chat.Component.literal(artist + " - " + song));
-            }
-        }
-    }
-
-    /**
-     * Re-evaluates one player's own listening state right now -- range/signal/gain, same logic
-     * {@link #onServerTick}'s periodic scan runs for everyone, just immediately for one player
-     * instead of waiting up to {@link #SCAN_INTERVAL_TICKS} ticks (5 real seconds). Called from
-     * {@code AudybleMod}'s {@code SetMurmurCrystalStatePayload} handler right after a GUI toggle/
-     * volume change is written onto the item, per explicit user feedback, 2026-11-02: flipping the
-     * switch should take effect immediately, not on the next periodic tick. The periodic scan still
-     * does the actual range-change detection (walking in/out of range) -- there's no practical event
-     * to hook for that, so it stays polled; only the GUI-triggered case needed to stop waiting on it.
-     */
-    public void refreshPlayer(ServerPlayer player) {
-        VoicechatServerApi currentApi = api;
-        if (currentApi == null || !AudybleConfig.MURMUR_CRYSTAL_ENABLED.get()) {
-            return;
+    public boolean refreshPlayer(ServerPlayer player) {
+        if (!AudybleConfig.MURMUR_CRYSTAL_ENABLED.get()) {
+            return false;
         }
         if (!(player.level() instanceof net.minecraft.server.level.ServerLevel playerLevel)) {
-            return;
+            return false;
         }
         checkWaypointArrival(player, playerLevel);
         MurmurCrystalState state = readState(player);
@@ -251,29 +153,88 @@ public final class MurmurCrystalEngine {
                 : Optional.empty();
 
         if (signal.isEmpty()) {
-            stopSession(player.getUUID());
-            return;
+            sendStopIfTracked(player);
+            return false;
         }
 
         SettlemyntsMurmurBridge.MurmurSignalInfo info = signal.get();
-        float strength = signalStrength(player.blockPosition(), info);
-        ListenerSession session = sessions.computeIfAbsent(player.getUUID(),
-                id -> startSession(currentApi, player));
-        if (session == null) {
+        double distance = Math.sqrt(player.blockPosition().distSqr(info.towerPos()));
+        double prefetchRange = info.maxRangeBlocks() * AudybleConfig.MUSIC_PREFETCH_RANGE_MULTIPLIER.get();
+        if (distance > prefetchRange) {
+            sendStopIfTracked(player);
+            return false;
+        }
+
+        MurmurStation station = STATIONS.computeIfAbsent(new StationKey(playerLevel.dimension(), info.towerPos()),
+                key -> new MurmurStation(STATION_WORKER));
+        station.ensureCurrent();
+
+        if (distance <= info.maxRangeBlocks()) {
+            sendTunedIn(player, station, info);
+            grantKnowledgeAndWaypoint(player, playerLevel, info);
+        } else {
+            sendPrefetchHint(player, station);
+        }
+        return true;
+    }
+
+    private void sendPrefetchHint(ServerPlayer player, MurmurStation station) {
+        var trackIds = station.allTrackIdsInOrder();
+        if (trackIds.isEmpty()) {
             return;
         }
-        session.gain = strength * state.volume();
-        session.station = STATIONS.computeIfAbsent(new StationKey(playerLevel.dimension(), info.towerPos()),
-                key -> new MurmurStation(MUSIC_DECODER));
+        PacketDistributor.sendToPlayer(player,
+                new MurmurPrefetchHintPayload(trackIds, AudybleConfig.MUSIC_HTTP_PORT.get()));
+    }
 
-        if (LyfeKnowledgeBridge.isLoaded() && info.tier() >= 3) {
-            boolean firstKnowledge = !LyfeKnowledgeBridge.hasAnyKnowledge(player, info.settlementPlaceId());
-            LyfeKnowledgeBridge.grantTowerKnowledge(player, info.settlementPlaceId(), player.level(), info.towerPos(), info.tier());
-            if (firstKnowledge) {
-                double radius = info.tier() >= 5 ? 0.0 : info.tier() == 4 ? 150.0 : 300.0;
-                LyfeKnowledgeBridge.setSettlementWaypoint(player, player.level(), info.towerPos(), radius);
-                pendingArrivals.put(player.getUUID(), new WaypointTarget(playerLevel.dimension(), info.towerPos()));
+    private void sendTunedIn(ServerPlayer player, MurmurStation station, SettlemyntsMurmurBridge.MurmurSignalInfo info) {
+        String trackId = station.currentTrackId();
+        if (trackId == null) {
+            return;
+        }
+        var upcoming = station.allTrackIdsInOrder();
+        upcoming.remove(0); // Drop the current track -- this list is the *upcoming* queue only.
+        PacketDistributor.sendToPlayer(player, new MurmurTunedInPayload(
+                trackId,
+                station.artist(),
+                station.song(),
+                (float) station.secondsIntoCurrentTrack(),
+                upcoming,
+                AudybleConfig.MUSIC_HTTP_PORT.get(),
+                info.towerPos(),
+                (float) info.maxRangeBlocks()));
+
+        if (AudybleConfig.SHOW_ARTIST_AND_SONG.get()) {
+            PlayerMurmurState state = states.computeIfAbsent(player.getUUID(), id -> new PlayerMurmurState());
+            long startNanos = station.trackStartNanos();
+            if (startNanos != 0L && startNanos != state.announcedTrackStartNanos) {
+                state.announcedTrackStartNanos = startNanos;
+                String artist = station.artist();
+                String song = station.song();
+                if (artist != null && song != null) {
+                    player.sendOverlayMessage(net.minecraft.network.chat.Component.literal(artist + " - " + song));
+                }
             }
+        }
+    }
+
+    private void sendStopIfTracked(ServerPlayer player) {
+        if (states.remove(player.getUUID()) != null) {
+            PacketDistributor.sendToPlayer(player, new MurmurStopPlaybackPayload());
+        }
+    }
+
+    private void grantKnowledgeAndWaypoint(ServerPlayer player, net.minecraft.server.level.ServerLevel playerLevel,
+            SettlemyntsMurmurBridge.MurmurSignalInfo info) {
+        if (!LyfeKnowledgeBridge.isLoaded() || info.tier() < 3) {
+            return;
+        }
+        boolean firstKnowledge = !LyfeKnowledgeBridge.hasAnyKnowledge(player, info.settlementPlaceId());
+        LyfeKnowledgeBridge.grantTowerKnowledge(player, info.settlementPlaceId(), player.level(), info.towerPos(), info.tier());
+        if (firstKnowledge) {
+            double radius = info.tier() >= 5 ? 0.0 : info.tier() == 4 ? 150.0 : 300.0;
+            LyfeKnowledgeBridge.setSettlementWaypoint(player, player.level(), info.towerPos(), radius);
+            pendingArrivals.put(player.getUUID(), new WaypointTarget(playerLevel.dimension(), info.towerPos()));
         }
     }
 
@@ -328,53 +289,5 @@ public final class MurmurCrystalEngine {
             return null;
         }
         return stack.get(ModDataComponents.MURMUR_CRYSTAL_STATE.get());
-    }
-
-    /** Clean inside {@link #STATIC_THRESHOLD_FRACTION} of max range, ramping linearly to {@link #VOLUME_FLOOR} at the edge -- same linear-falloff-with-floor shape as {@code AcousticOcclusion#treatmentFor}, reused for consistency rather than new math. */
-    private static float signalStrength(BlockPos listenerPos, SettlemyntsMurmurBridge.MurmurSignalInfo info) {
-        double distance = Math.sqrt(listenerPos.distSqr(info.towerPos()));
-        double maxRange = info.maxRangeBlocks();
-        double staticThreshold = maxRange * STATIC_THRESHOLD_FRACTION;
-        if (distance <= staticThreshold) {
-            return 1.0f;
-        }
-        if (distance >= maxRange || maxRange <= staticThreshold) {
-            return VOLUME_FLOOR;
-        }
-        double t = (distance - staticThreshold) / (maxRange - staticThreshold);
-        return (float) Math.max(VOLUME_FLOOR, 1.0 - t * (1.0 - VOLUME_FLOOR));
-    }
-
-    private ListenerSession startSession(VoicechatServerApi currentApi, ServerPlayer player) {
-        VoicechatConnection connection = currentApi.getConnectionOf(player.getUUID());
-        if (connection == null) {
-            return null;
-        }
-        StaticAudioChannel channel = currentApi.createStaticAudioChannel(UUID.randomUUID());
-        if (channel == null) {
-            return null;
-        }
-        channel.addTarget(connection);
-        // AUDIO mode, not the no-arg default (VOIP -- confirmed via javap against the real
-        // voicechat-api-2.6.20 jar, a de.maxhenkel.voicechat.api.opus.OpusEncoderMode enum with
-        // VOIP/AUDIO/RESTRICTED_LOWDELAY) -- real user report, 2026-11-02: "a ton of distortion"
-        // on a known-good test file. VOIP is the right choice for NpcConversationEngine's actual
-        // speech, but Opus's voice-tuned bitrate/bandwidth profile mangles real music badly; AUDIO
-        // is the general-purpose music-appropriate mode.
-        OpusEncoder encoder = currentApi.createEncoder(OpusEncoderMode.AUDIO);
-        ListenerSession session = new ListenerSession(channel);
-        AudioPlayer audioPlayer = currentApi.createAudioPlayer(channel, encoder, session::nextFrame);
-        session.player = audioPlayer;
-        audioPlayer.setOnStopped(encoder::close);
-        audioPlayer.startPlaying();
-        return session;
-    }
-
-    private void stopSession(UUID playerId) {
-        ListenerSession session = sessions.remove(playerId);
-        if (session != null) {
-            session.player.stopPlaying();
-            session.channel.clearTargets();
-        }
     }
 }
