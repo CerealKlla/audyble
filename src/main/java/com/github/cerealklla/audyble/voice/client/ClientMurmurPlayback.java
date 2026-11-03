@@ -96,13 +96,47 @@ public final class ClientMurmurPlayback {
         }
     }
 
+    /**
+     * How far the newly-reported position may disagree with where this client's own smooth
+     * extrapolation already is before it's worth correcting -- see {@link #onTunedIn}'s own doc for
+     * why this exists. Comfortably covers normal network/client-tick latency jitter (usually well
+     * under 100ms) without covering up a genuine desync (e.g. after a lag spike, or tuning back in
+     * after walking away) for long.
+     */
+    private static final double RESYNC_DRIFT_THRESHOLD_SECONDS = 0.3;
+
     private static void onTunedIn(MurmurTunedInPayload payload) {
         String host = currentServerHost();
         if (host == null) {
             return;
         }
-        TUNED_IN.set(new TunedIn(payload.trackId(), payload.artist(), payload.song(), payload.secondsIntoTrack(),
-                System.nanoTime(), payload.upcomingTrackIds(), host, payload.httpPort(), payload.towerPos(), payload.maxRangeBlocks()));
+        long now = System.nanoTime();
+        double anchorSeconds = payload.secondsIntoTrack();
+        long anchorNanos = now;
+
+        /*
+         * Real bug fix, 2026-11-02 -- "it still sounds like it's stuttering, almost like two copies
+         * of the same are playing at 1/8 of a second off from each other." Every periodic resync
+         * (roughly once a second) used to unconditionally reset the position anchor to exactly what
+         * the server reported, even though that value was already stale by the time it's applied
+         * here (real network transit time, plus up to one client-tick's worth of queueing through
+         * ClientMurmurRequests) -- each reset silently rewound playback by that much, replaying
+         * audio just heard, which is exactly what sounds like a short echo/double repeating on every
+         * sync. Fix: only actually reset the anchor when the new report disagrees with this client's
+         * own already-running smooth extrapolation by more than {@link
+         * #RESYNC_DRIFT_THRESHOLD_SECONDS} -- small, expected latency jitter no longer causes any
+         * audible jump at all, while a genuine desync still gets corrected.
+         */
+        TunedIn previous = TUNED_IN.get();
+        if (previous != null && previous.trackId().equals(payload.trackId())) {
+            double extrapolatedSeconds = previous.secondsIntoTrackAtReceipt() + (now - previous.receiptNanos()) / 1_000_000_000.0;
+            if (Math.abs(extrapolatedSeconds - payload.secondsIntoTrack()) < RESYNC_DRIFT_THRESHOLD_SECONDS) {
+                anchorSeconds = extrapolatedSeconds;
+            }
+        }
+
+        TUNED_IN.set(new TunedIn(payload.trackId(), payload.artist(), payload.song(), anchorSeconds,
+                anchorNanos, payload.upcomingTrackIds(), host, payload.httpPort(), payload.towerPos(), payload.maxRangeBlocks()));
 
         ensureDecodedAsync(payload.trackId(), host, payload.httpPort());
         for (String trackId : payload.upcomingTrackIds()) {
