@@ -172,10 +172,13 @@ public final class ClientMurmurPlayback {
     private static void playbackLoop() {
         int chunkSize = SAMPLE_RATE / 10; // 0.1s per chunk.
         byte[] outBuffer = new byte[chunkSize * 2];
+        TunedIn lastSeenAnchor = null;
+        long nextSampleIndex = 0;
         while (true) {
             TunedIn tuned = TUNED_IN.get();
             if (tuned == null) {
                 closeLineIfOpen();
+                lastSeenAnchor = null;
                 sleepQuietly(100);
                 continue;
             }
@@ -183,7 +186,6 @@ public final class ClientMurmurPlayback {
             float strength;
             float staticAmount;
             float guiVolume;
-            long sampleIndex;
             try {
                 LocalPlayer player = Minecraft.getInstance().player;
                 if (player == null) {
@@ -194,12 +196,33 @@ public final class ClientMurmurPlayback {
                 strength = SignalCurve.strength(distance, tuned.maxRangeBlocks());
                 staticAmount = SignalCurve.staticAmount(distance, tuned.maxRangeBlocks());
                 guiVolume = resolveGuiVolume(player);
-                double secondsElapsed = tuned.secondsIntoTrackAtReceipt() + (System.nanoTime() - tuned.receiptNanos()) / 1_000_000_000.0;
-                sampleIndex = (long) (secondsElapsed * SAMPLE_RATE);
             } catch (Exception e) {
                 sleepQuietly(100);
                 continue;
             }
+
+            /*
+             * Real bug fix, 2026-11-02 -- "sounds no different," still an echo-like doubling even
+             * after the resync-drift fix above. That fix only addressed the once-a-second sync
+             * boundary; this is the actual, continuous cause: the position used to be re-derived
+             * from the wall clock on *every* chunk (10x/second), independent of what the previous
+             * chunk already wrote. `SourceDataLine#write` only blocks once its own internal buffer
+             * is full -- if that buffer has room for more than one chunk (common), a `write` call
+             * can return well before a real 0.1s has elapsed, so the next loop iteration's fresh
+             * wall-clock calculation could land *before* the end of the chunk just written,
+             * re-writing audio that was already queued moments ago -- exactly "two copies... offset
+             * from each other." Fixed by only ever re-deriving the position from the wall clock when
+             * {@code tuned} is a genuinely new anchor (a different object -- a real track change or
+             * a corrected desync, see {@link #onTunedIn}); otherwise this just continues from
+             * exactly where the previous chunk left off, the same sample-accurate way any real audio
+             * player advances during steady-state playback.
+             */
+            if (tuned != lastSeenAnchor) {
+                double secondsElapsed = tuned.secondsIntoTrackAtReceipt() + (System.nanoTime() - tuned.receiptNanos()) / 1_000_000_000.0;
+                nextSampleIndex = (long) (secondsElapsed * SAMPLE_RATE);
+                lastSeenAnchor = tuned;
+            }
+            long sampleIndex = nextSampleIndex;
 
             ensureLineOpen();
             SourceDataLine currentLine = line;
@@ -221,6 +244,7 @@ public final class ClientMurmurPlayback {
                 outBuffer[i * 2 + 1] = (byte) ((sample >> 8) & 0xFF);
             }
             currentLine.write(outBuffer, 0, outBuffer.length);
+            nextSampleIndex += chunkSize;
         }
     }
 
