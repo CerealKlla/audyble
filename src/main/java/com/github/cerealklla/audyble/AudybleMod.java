@@ -6,6 +6,8 @@ import com.github.cerealklla.audyble.content.AudybleEffects;
 import com.github.cerealklla.audyble.content.AudybleItems;
 import com.github.cerealklla.audyble.npc.NpcAttachments;
 import com.github.cerealklla.audyble.npc.NpcConversationEngine;
+import com.github.cerealklla.audyble.npc.NpcDebugCommands;
+import com.github.cerealklla.audyble.npc.NpcStoreBootstrap;
 import com.github.cerealklla.audyble.registration.ModDataComponents;
 import com.github.cerealklla.audyble.voice.MurmurCrystalEngine;
 import com.github.cerealklla.audyble.voice.MurmurPrefetchHintPayload;
@@ -50,6 +52,8 @@ public class AudybleMod {
 
         NpcConversationEngine.init();
         MurmurCrystalEngine.init();
+        NeoForge.EVENT_BUS.register(new NpcStoreBootstrap());
+        NpcDebugCommands.init();
 
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(this::registerPayloads);
