@@ -116,6 +116,14 @@ public final class AudybleConfig {
             .comment("How long (ms) of silence ends a player's utterance and triggers STT -> LLM -> TTS.")
             .defineInRange("npcSilenceTimeoutMillis", 700, 200, 5000);
 
+    public static final ModConfigSpec.IntValue NPC_RELATIONSHIP_SUMMARY_IDLE_MILLIS = BUILDER
+            .comment("How long (ms) a (player, NPC) conversation must go quiet before it's considered "
+                    + "genuinely over -- at which point it's re-summarized into PlayerRelationshipStore "
+                    + "(never a raw transcript) and the in-memory rolling history is cleared. Deliberately "
+                    + "much longer than npcSilenceTimeoutMillis, which only ends one utterance, not the "
+                    + "whole conversation.")
+            .defineInRange("npcRelationshipSummaryIdleMillis", 120000, 5000, 1800000);
+
     public static final ModConfigSpec SPEC = BUILDER.build();
 
     private AudybleConfig() {
