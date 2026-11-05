@@ -167,7 +167,7 @@ public final class MurmurCrystalEngine {
 
         MurmurStation station = STATIONS.computeIfAbsent(new StationKey(playerLevel.dimension(), info.towerPos()),
                 key -> new MurmurStation(STATION_WORKER));
-        station.ensureCurrent();
+        station.ensureCurrent(info.settlementPlaceId());
 
         if (distance <= info.maxRangeBlocks()) {
             sendTunedIn(player, station, info);

@@ -29,10 +29,15 @@ import org.slf4j.LoggerFactory;
  * clients to mirror. A listener arriving mid-song still starts mid-song, same as a real radio.
  *
  * <p>One instance per tower (keyed by dimension+position in {@link
- * MurmurCrystalEngine#STATIONS}), never per listener. {@link #ensureCurrent()} advances past any
+ * MurmurCrystalEngine#STATIONS}), never per listener. {@link #ensureCurrent(long)} advances past any
  * track(s) that have already finished by pure math against the wall clock -- correct no matter how
  * infrequently it's called, with no drift, since it always re-derives the current track/position
  * from real elapsed time rather than incrementing anything per call.
+ *
+ * <p>Takes the owning settlement's real place id on every call (added for the Radio tab's per-
+ * station playlist feature) so a refill can prefer that settlement's own curated picks via {@link
+ * MurmurPlaylistStore} over the full shared library -- not new per-station state, just an extra
+ * parameter threaded through from {@link MurmurCrystalEngine#refreshPlayer}.
  */
 final class MurmurStation {
 
@@ -59,8 +64,11 @@ final class MurmurStation {
      * before reading any of this station's state ({@link #currentTrackId()}, etc.) so it's never
      * stale. Cheap and safe to call redundantly (every scan, for every listener) -- the real work
      * (picking + probing a new track) only ever happens in the background {@link #worker}.
+     *
+     * @param settlementPlaceId this tower's owning settlement, used only if a refill is needed, to
+     *                           look up its configured playlist (see {@link MurmurPlaylistStore}).
      */
-    synchronized void ensureCurrent() {
+    synchronized void ensureCurrent(long settlementPlaceId) {
         maintainDebugOverride();
         if (current == null) {
             promoteFromQueue();
@@ -77,7 +85,7 @@ final class MurmurStation {
             }
         }
         if (upcoming.size() < QUEUE_SIZE) {
-            requestFill();
+            requestFill(settlementPlaceId);
         }
     }
 
@@ -94,7 +102,7 @@ final class MurmurStation {
         return true;
     }
 
-    private void requestFill() {
+    private void requestFill(long settlementPlaceId) {
         if (refilling) {
             return;
         }
@@ -102,7 +110,7 @@ final class MurmurStation {
         worker.submit(() -> {
             QueuedTrack picked = null;
             try {
-                Optional<Path> chosen = MusicLibrary.pickRandomTrack();
+                Optional<Path> chosen = MusicLibrary.pickFromPlaylist(MurmurPlaylistStore.getPlaylist(settlementPlaceId));
                 if (chosen.isPresent()) {
                     Path path = chosen.get();
                     double duration = MusicLibrary.probeDurationSeconds(path);

@@ -154,6 +154,57 @@ public final class MusicLibrary {
         return java.util.Optional.of(tracks.get(ThreadLocalRandom.current().nextInt(tracks.size())));
     }
 
+    /**
+     * Picks randomly among {@code trackIds} (resolved back to real files via {@link #resolveTrackId},
+     * skipping any that no longer exist -- a track a nightly job removed, or that was never real to
+     * begin with), falling back to {@link #pickRandomTrack()} when {@code trackIds} is empty or every
+     * id in it is stale, so a station with no playlist configured yet (or one whose entire playlist
+     * went stale) keeps today's existing global-random behavior rather than going silent.
+     */
+    static java.util.Optional<Path> pickFromPlaylist(List<String> trackIds) {
+        if (trackIds.isEmpty()) {
+            return pickRandomTrack();
+        }
+        List<Path> resolved = trackIds.stream()
+                .map(MusicLibrary::resolveTrackId)
+                .filter(java.util.Optional::isPresent)
+                .map(java.util.Optional::get)
+                .toList();
+        if (resolved.isEmpty()) {
+            return pickRandomTrack();
+        }
+        return java.util.Optional.of(resolved.get(ThreadLocalRandom.current().nextInt(resolved.size())));
+    }
+
+    /** One catalog entry, for the Settlemynts-facing Radio tab picker (see {@code api.Audyble#listCatalogTracks}). */
+    public record TrackSummary(String trackId, String artist, String song) {
+    }
+
+    /** Every track currently found under the configured music source directory. */
+    public static List<TrackSummary> listAllTracks() {
+        String configured = AudybleConfig.MUSIC_SOURCE_DIRECTORY.get();
+        if (configured == null || configured.isBlank()) {
+            return List.of();
+        }
+        return tracksFor(configured).stream()
+                .map(p -> {
+                    TrackInfo info = trackInfoFor(p);
+                    return new TrackSummary(trackIdFor(p), info.artist(), info.song());
+                })
+                .toList();
+    }
+
+    /**
+     * Drops the cached directory scan so a file the nightly song-request job just dropped in becomes
+     * visible immediately, without needing a server restart -- called from {@code
+     * voice.MurmurAdminCommands}' {@code /audyble murmur assign} command right before it records the
+     * new track against a station's playlist.
+     */
+    static void invalidateCache() {
+        CACHE.set(null);
+        cachedForDirectory = null;
+    }
+
     /** Cached per-directory -- rescanning a large real music library (thousands of songs) on every pick would be wasteful. */
     private static List<Path> tracksFor(String configured) {
         List<Path> cached = CACHE.get();

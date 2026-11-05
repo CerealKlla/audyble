@@ -11,6 +11,7 @@ import com.github.cerealklla.audyble.npc.NpcStoreBootstrap;
 import com.github.cerealklla.audyble.npc.WanderingDeathListener;
 import com.github.cerealklla.audyble.npc.WanderingIdentityListener;
 import com.github.cerealklla.audyble.registration.ModDataComponents;
+import com.github.cerealklla.audyble.voice.MurmurAdminCommands;
 import com.github.cerealklla.audyble.voice.MurmurCrystalEngine;
 import com.github.cerealklla.audyble.voice.MurmurPrefetchHintPayload;
 import com.github.cerealklla.audyble.voice.MurmurStopPlaybackPayload;
@@ -58,6 +59,7 @@ public class AudybleMod {
         NeoForge.EVENT_BUS.register(new WanderingIdentityListener());
         NeoForge.EVENT_BUS.register(new WanderingDeathListener());
         NpcDebugCommands.init();
+        MurmurAdminCommands.init();
 
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(this::registerPayloads);
