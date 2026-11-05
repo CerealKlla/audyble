@@ -15,9 +15,10 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
 
 import com.github.cerealklla.audyble.AudybleMod;
-import com.github.cerealklla.audyble.api.Audyble;
 import com.github.cerealklla.audyble.bridge.SettlemyntsIdentityBridge;
 import com.github.cerealklla.audyble.config.AudybleConfig;
+import com.github.cerealklla.nuclyus.llm.OllamaClient;
+import com.github.cerealklla.nuclyus.llm.WorldLore;
 
 import de.maxhenkel.voicechat.api.VoicechatConnection;
 import de.maxhenkel.voicechat.api.VoicechatServerApi;
@@ -88,17 +89,19 @@ public final class NpcConversationEngine {
     /**
      * In-memory rolling state for one {@link ConversationKey} -- deliberately as disposable as the
      * old npc-only map was (lost on restart is fine, matching {@code ConversationalNpcConfig}'s own
-     * doc). {@code npcKey} is resolved once, at the conversation's first turn, and reused for every
-     * later turn/summarization in this thread rather than re-resolved from a possibly-now-gone live
-     * entity.
+     * doc). {@code initialIdentity} is resolved once, at the conversation's first turn, and reused as
+     * the stable (ownerId, role) handle for every later relationship read/write in this thread --
+     * {@code null} if Settlemynts wasn't loaded (or had no opinion) at that moment, in which case no
+     * relationship memory is ever read or written for this conversation (see {@link
+     * SettlemyntsIdentityBridge}'s own null-handle no-op convention).
      */
     private static final class ConversationState {
-        final NpcIdentityKey npcKey;
+        final SettlemyntsIdentityBridge.IdentitySnapshot initialIdentity;
         final Deque<OllamaClient.Turn> history = new ArrayDeque<>();
         volatile long lastTurnAtMillis = System.currentTimeMillis();
 
-        ConversationState(NpcIdentityKey npcKey) {
-            this.npcKey = npcKey;
+        ConversationState(SettlemyntsIdentityBridge.IdentitySnapshot initialIdentity) {
+            this.initialIdentity = initialIdentity;
         }
     }
 
@@ -121,11 +124,12 @@ public final class NpcConversationEngine {
      * deliberately widened to 120s (a slow/hung in-flight Ollama call now blocks this thread far
      * longer, and nothing was ever telling it to stop). {@code shutdownNow()} interrupts any
      * in-flight HTTP call immediately rather than waiting for it to finish or time out on its own.
+     * The matching shutdown for NPC birth generation's own executor moved to Settlemynts alongside
+     * {@code npc.NpcIdentityPrompting} itself, 2026-11-05.
      */
     @SubscribeEvent
     public void onServerStopping(ServerStoppingEvent event) {
         pipelineExecutor.shutdownNow();
-        NpcIdentityPrompting.shutdown();
     }
 
     /** Called by {@link com.github.cerealklla.audyble.voice.AudyblePlugin} for every microphone packet. */
@@ -231,15 +235,24 @@ public final class NpcConversationEngine {
 
             ConversationKey pairKey = new ConversationKey(npcEntityId, playerId);
             ConversationState convo = conversations.computeIfAbsent(pairKey,
-                    k -> new ConversationState(resolveIdentityKey(npcEntity)));
+                    k -> new ConversationState(resolveInitialIdentity(npcEntity)));
 
             String settlementName = resolveSettlementName(npcEntity).orElse("");
-            NpcIdentity identity = Audyble.resolveOrBeginBirth(convo.npcKey, null, settlementName);
-            PlayerRelationship relationship = Audyble.getRelationship(convo.npcKey, playerId);
-            String systemPrompt = buildSystemPrompt(identity, relationship, npcConfig, settlementName);
+            // Re-resolved fresh every turn (not just reusing convo.initialIdentity) so a name/backstory
+            // that finished async-generating mid-conversation shows up without waiting for a new
+            // conversation to start -- resolveOrBeginBirth is a cheap store lookup after the first call,
+            // same as the old Audyble-owned version this replaced.
+            Optional<SettlemyntsIdentityBridge.IdentitySnapshot> identity = npcEntity.level() instanceof ServerLevel npcLevel
+                    ? SettlemyntsIdentityBridge.resolveOrBeginBirth(npcLevel, npcEntity)
+                    : Optional.empty();
+            String npcName = identity.map(SettlemyntsIdentityBridge.IdentitySnapshot::name)
+                    .filter(n -> !n.isBlank()).orElse(npcConfig.characterName());
+            String backstory = identity.map(SettlemyntsIdentityBridge.IdentitySnapshot::backstory).orElse("");
+            String keyFacts = identity.map(SettlemyntsIdentityBridge.IdentitySnapshot::keyFactsPromptText).orElse("");
+            String relationshipSummary = SettlemyntsIdentityBridge.getRelationshipSummary(convo.initialIdentity, playerId);
+            String systemPrompt = buildSystemPrompt(npcName, backstory, keyFacts, relationshipSummary, npcConfig, settlementName);
 
-            OllamaClient ollama = new OllamaClient(AudybleConfig.OLLAMA_BASE_URL.get(), AudybleConfig.OLLAMA_MODEL.get());
-            String reply = stripStageDirections(ollama.chat(systemPrompt, List.copyOf(convo.history), transcript));
+            String reply = stripStageDirections(OllamaClient.chat(systemPrompt, List.copyOf(convo.history), transcript));
             if (reply.isBlank()) {
                 return;
             }
@@ -286,7 +299,8 @@ public final class NpcConversationEngine {
         return STAGE_DIRECTION.matcher(reply).replaceAll("").trim();
     }
 
-    private static String buildSystemPrompt(NpcIdentity identity, PlayerRelationship relationship, ConversationalNpcConfig npcConfig, String settlementName) {
+    private static String buildSystemPrompt(String npcName, String backstory, String keyFacts,
+                                             String relationshipSummary, ConversationalNpcConfig npcConfig, String settlementName) {
         StringBuilder prompt = new StringBuilder();
         prompt.append(SPOKEN_DIALOGUE_ONLY_INSTRUCTION);
         prompt.append(WorldLore.TEXT).append('\n');
@@ -298,14 +312,13 @@ public final class NpcConversationEngine {
             prompt.append("The settlement you live in is called ").append(settlementName)
                     .append(". Always refer to it by this real name -- never invent or use a different one.\n");
         }
-        prompt.append("You are ").append(identity.name()).append(". ").append(identity.backstory()).append('\n');
-        String keyFacts = identity.keyFactsAsPromptText();
+        prompt.append("You are ").append(npcName).append(". ").append(backstory).append('\n');
         if (!keyFacts.isBlank()) {
             prompt.append("Key facts about you:\n").append(keyFacts).append('\n');
         }
-        if (!relationship.summary().isBlank()) {
+        if (!relationshipSummary.isBlank()) {
             prompt.append("Your history with the player you're currently speaking to: ")
-                    .append(relationship.summary()).append('\n');
+                    .append(relationshipSummary).append('\n');
         }
         if (!npcConfig.systemPrompt().isBlank()) {
             prompt.append(npcConfig.systemPrompt());
@@ -315,17 +328,19 @@ public final class NpcConversationEngine {
 
     /**
      * Re-summarizes an idle-ended conversation's full rolling history (never persisted as a raw
-     * transcript) into a new, bounded {@link PlayerRelationship}, building on whatever summary
-     * already existed. Runs on {@link #pipelineExecutor}, same as the main pipeline -- calls Ollama
-     * once more, so it must never run on the server thread.
+     * transcript) into a new, bounded relationship summary (persisted via {@link
+     * SettlemyntsIdentityBridge#putRelationshipSummary}), building on whatever summary already
+     * existed. Runs on {@link #pipelineExecutor}, same as the main pipeline -- calls the LLM once
+     * more, so it must never run on the server thread.
      */
     private void summarizeAndPersist(ConversationKey pairKey, ConversationState convo) {
         List<OllamaClient.Turn> turns = List.copyOf(convo.history);
-        if (turns.isEmpty()) {
-            return;
+        MinecraftServer currentServer = server;
+        if (turns.isEmpty() || convo.initialIdentity == null || currentServer == null) {
+            return; // No relationship memory to update without a resolved identity (Settlemynts not loaded) or a server reference for the write.
         }
         try {
-            PlayerRelationship existing = Audyble.getRelationship(convo.npcKey, pairKey.playerId());
+            String existingSummary = SettlemyntsIdentityBridge.getRelationshipSummary(convo.initialIdentity, pairKey.playerId());
             StringBuilder transcript = new StringBuilder();
             for (OllamaClient.Turn turn : turns) {
                 transcript.append(turn.role()).append(": ").append(turn.content()).append('\n');
@@ -333,16 +348,13 @@ public final class NpcConversationEngine {
             String summarizePrompt = "You maintain a short, bounded running summary of an NPC's relationship "
                     + "with one player, for reuse in future conversations. Reply with ONLY the new summary "
                     + "text (2-4 sentences, no preamble), building on the prior summary where relevant.\n"
-                    + "Prior summary: " + (existing.summary().isBlank() ? "(none yet -- this is their first conversation)" : existing.summary());
+                    + "Prior summary: " + (existingSummary.isBlank() ? "(none yet -- this is their first conversation)" : existingSummary);
 
-            OllamaClient ollama = new OllamaClient(AudybleConfig.OLLAMA_BASE_URL.get(), AudybleConfig.OLLAMA_MODEL.get());
-            String newSummary = ollama.chat(summarizePrompt, List.of(), transcript.toString()).trim();
+            String newSummary = OllamaClient.chat(summarizePrompt, List.of(), transcript.toString()).trim();
             if (newSummary.isBlank()) {
                 return;
             }
-            MinecraftServer currentServer = server;
-            long gameTime = currentServer != null ? currentServer.overworld().getGameTime() : existing.lastUpdatedGameTime();
-            Audyble.putRelationship(new PlayerRelationship(existing.key(), newSummary, gameTime));
+            SettlemyntsIdentityBridge.putRelationshipSummary(currentServer.overworld(), convo.initialIdentity, pairKey.playerId(), newSummary);
         } catch (Exception e) {
             AudybleMod.LOGGER.error("Audyble NPC relationship summarization failed", e);
         }
@@ -383,15 +395,12 @@ public final class NpcConversationEngine {
         return NON_SPEECH_HALLUCINATION.matcher(transcript.trim()).matches();
     }
 
-    /** Resolves {@code entity}'s persistent identity key -- a real plot-bound worker/Guard via Settlemynts, otherwise its own entity UUID as a wandering identity (Wandering Trader, or a manually bound test entity). */
-    private NpcIdentityKey resolveIdentityKey(Entity entity) {
-        if (SettlemyntsIdentityBridge.isLoaded()) {
-            Optional<NpcIdentityKey> key = SettlemyntsIdentityBridge.resolveIdentityKey(entity);
-            if (key.isPresent()) {
-                return key.get();
-            }
+    /** Resolves {@code entity}'s persistent identity handle -- a real plot-bound worker/Guard via Settlemynts, otherwise its own entity UUID as a wandering identity (Wandering Trader, or a manually bound test entity) -- {@code null} only if Settlemynts isn't loaded at all. */
+    private SettlemyntsIdentityBridge.IdentitySnapshot resolveInitialIdentity(Entity entity) {
+        if (!(entity.level() instanceof ServerLevel level)) {
+            return null;
         }
-        return NpcIdentityKey.wandering(entity.getUUID());
+        return SettlemyntsIdentityBridge.resolveOrBeginBirth(level, entity).orElse(null);
     }
 
     /** {@code entity}'s real settlement name, if it's a Settlemynts plot-bound worker/guard with one -- see {@link #buildSystemPrompt}. */
@@ -460,8 +469,11 @@ public final class NpcConversationEngine {
     /**
      * True for an explicitly {@code /audyble npc bind}-bound test entity, a real vanilla {@link
      * WanderingTrader} (every one gets a real Phase 5b Milestone 3 identity), or a real plot-bound
-     * worker/Guard resolvable via {@link SettlemyntsIdentityBridge} -- deliberately NOT true for an
-     * arbitrary mob, so ordinary wildlife never becomes talkable just by standing near a player.
+     * worker/Guard recognized via {@link SettlemyntsIdentityBridge#isRecognizedWorkerOrGuard} --
+     * deliberately NOT true for an arbitrary mob, so ordinary wildlife never becomes talkable just by
+     * standing near a player. Uses the narrower {@code isRecognizedWorkerOrGuard} check specifically
+     * (not {@link SettlemyntsIdentityBridge#resolveOrBeginBirth}, which assigns a generic identity to
+     * literally anything) -- see that method's own doc for why.
      */
     private boolean isConversational(Entity entity) {
         if (entity.hasData(NpcAttachments.CONVERSATIONAL_NPC)) {
@@ -470,7 +482,7 @@ public final class NpcConversationEngine {
         if (entity instanceof WanderingTrader) {
             return true;
         }
-        return SettlemyntsIdentityBridge.isLoaded() && SettlemyntsIdentityBridge.resolveIdentityKey(entity).isPresent();
+        return SettlemyntsIdentityBridge.isRecognizedWorkerOrGuard(entity);
     }
 
     /**

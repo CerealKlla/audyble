@@ -1,7 +1,5 @@
 package com.github.cerealklla.audyble.npc;
 
-import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
 
 import com.mojang.brigadier.CommandDispatcher;
@@ -16,11 +14,12 @@ import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 
 /**
- * Two commands for Phase 5b (context/design-document.md): a real player self-service command
- * ({@code /audyble pronunciation set}) and a dev/test debug command ({@code /audyble npc
- * debugidentity}) used to exercise {@link Audyble}'s store-backed facade -- including a real
- * persistence round trip across a server restart -- before any spawn ticker or conversation code
- * depends on it. Unguarded (no permission check), same precedent as {@code
+ * A real player self-service command ({@code /audyble pronunciation set}) -- {@link Audyble}'s store-
+ * backed pronunciation facade, the one piece of Phase 5b that stayed in this mod (a player-keyed TTS
+ * setting, not NPC history -- see Settlemynts' {@code npc.NpcIdentityStore}'s own class doc for the
+ * full ownership-move writeup of everything else). Lost its {@code npc debugidentity} subcommand,
+ * 2026-11-05 -- moved to Settlemynts' own {@code /settlemynts npc debugidentity}, since that mod now
+ * owns the store it was exercising. Unguarded (no permission check), same precedent as {@code
  * NpcConversationEngine#register}'s existing {@code /audyble npc bind} in this same mod.
  */
 public final class NpcDebugCommands {
@@ -45,52 +44,6 @@ public final class NpcDebugCommands {
                         }));
         var pronunciation = Commands.literal("pronunciation").then(pronunciationSet);
 
-        var debugSetNode = Commands.literal("set")
-                .then(Commands.argument("role", StringArgumentType.word())
-                        .then(Commands.argument("ownerId", StringArgumentType.word())
-                                .then(Commands.argument("name", StringArgumentType.word())
-                                        .then(Commands.argument("backstory", StringArgumentType.greedyString())
-                                                .executes(NpcDebugCommands::debugSet)))));
-        var debugGetNode = Commands.literal("get")
-                .then(Commands.argument("role", StringArgumentType.word())
-                        .then(Commands.argument("ownerId", StringArgumentType.word())
-                                .executes(NpcDebugCommands::debugGet)));
-        var debugDeceasedNode = Commands.literal("deceased").executes(NpcDebugCommands::debugDeceased);
-        var debugIdentity = Commands.literal("debugidentity")
-                .then(debugSetNode).then(debugGetNode).then(debugDeceasedNode);
-        var npc = Commands.literal("npc").then(debugIdentity);
-
-        dispatcher.register(Commands.literal("audyble").then(pronunciation).then(npc));
-    }
-
-    private static NpcIdentityKey parseKey(com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx) {
-        PlotRole role = PlotRole.valueOf(StringArgumentType.getString(ctx, "role").toUpperCase(java.util.Locale.ROOT));
-        UUID ownerId = UUID.fromString(StringArgumentType.getString(ctx, "ownerId"));
-        return new NpcIdentityKey(ownerId, role);
-    }
-
-    private static int debugSet(com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx) {
-        NpcIdentityKey key = parseKey(ctx);
-        String name = StringArgumentType.getString(ctx, "name");
-        String backstory = StringArgumentType.getString(ctx, "backstory");
-        Optional<Long> existingSettlementPlaceId = Audyble.findIdentity(key).flatMap(NpcIdentity::settlementPlaceId);
-        Audyble.putIdentity(new NpcIdentity(key, name, backstory, List.of(), true, Optional.empty(), existingSettlementPlaceId));
-        ctx.getSource().sendSuccess(() -> Component.literal("Set identity " + key + " -> \"" + name + "\"."), false);
-        return 1;
-    }
-
-    private static int debugGet(com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx) {
-        NpcIdentityKey key = parseKey(ctx);
-        Optional<NpcIdentity> found = Audyble.findIdentity(key);
-        ctx.getSource().sendSuccess(() -> Component.literal(found.isPresent()
-                ? "Identity " + key + " = " + found.get() : "No identity found for " + key + "."), false);
-        return 1;
-    }
-
-    private static int debugDeceased(com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx) {
-        List<NpcIdentity> deceased = Audyble.deceasedIdentities();
-        ctx.getSource().sendSuccess(() -> Component.literal(deceased.isEmpty()
-                ? "No deceased identities." : deceased.size() + " deceased: " + deceased), false);
-        return 1;
+        dispatcher.register(Commands.literal("audyble").then(pronunciation));
     }
 }

@@ -93,21 +93,11 @@ public final class AudybleConfig {
     // actually stands them up and points these at them (see context/decisions.md's open items).
 
     public static final ModConfigSpec.BooleanValue NPC_CONVERSATION_ENABLED = BUILDER
-            .comment("Master switch for Phase 5 NPC verbal conversation. Requires Ollama, a Kokoro TTS "
-                    + "server, and a Whisper STT server all reachable at the URLs below.")
+            .comment("Master switch for Phase 5 NPC verbal conversation. Requires Nuclyus's shared "
+                    + "Ollama LLM client (nuclyus-server.toml's own ollamaBaseUrl/ollamaModel -- moved "
+                    + "there 2026-11-05, see that mod's own config doc), a Kokoro TTS server, and a "
+                    + "Whisper STT server all reachable/configured.")
             .define("npcConversationEnabled", false);
-
-    public static final ModConfigSpec.ConfigValue<String> OLLAMA_BASE_URL = BUILDER
-            .comment("Base URL of a local Ollama instance, e.g. http://127.0.0.1:11434 -- use a literal "
-                    + "IPv4 address, not 'localhost': confirmed live 2026-11-04 that Java's HttpClient can "
-                    + "fail to connect via the 'localhost' hostname when a local service binds IPv4-only "
-                    + "(the loopback IPv6 ::1 resolves first and has nothing listening, and unlike curl's "
-                    + "own fallback behavior, HttpClient doesn't reliably retry the IPv4 address after that).")
-            .define("ollamaBaseUrl", "http://127.0.0.1:11434");
-
-    public static final ModConfigSpec.ConfigValue<String> OLLAMA_MODEL = BUILDER
-            .comment("Ollama model name to use for NPC dialogue, e.g. llama3.1:8b, gemma2:9b, qwen2.5:7b, phi4")
-            .define("ollamaModel", "llama3.1:8b");
 
     public static final ModConfigSpec.ConfigValue<String> KOKORO_BASE_URL = BUILDER
             .comment("Base URL of a local Kokoro-82M TTS server exposing an OpenAI-compatible "
