@@ -106,8 +106,13 @@ public final class AudybleConfig {
             .define("kokoroBaseUrl", "http://127.0.0.1:8880");
 
     public static final ModConfigSpec.ConfigValue<String> KOKORO_VOICE = BUILDER
-            .comment("Kokoro voice name, e.g. af_heart, am_michael -- see the Kokoro project's own voice list.")
-            .define("kokoroVoice", "af_heart");
+            .comment("Kokoro voice name, e.g. af_heart, am_michael -- see the Kokoro project's own voice list. "
+                    + "Default changed to a male voice 2026-11-05 (was af_heart) -- every NPC entity this mod "
+                    + "spawns renders as a male-presenting humanoid (Villager's own base model, or the "
+                    + "reskinned-Zombie Guard/Tavern placeholder renderers), and this is one single voice used "
+                    + "for every NPC conversation, so the two need to agree until real per-NPC voice variety "
+                    + "exists.")
+            .define("kokoroVoice", "am_michael");
 
     public static final ModConfigSpec.ConfigValue<String> WHISPER_BASE_URL = BUILDER
             .comment("Base URL of a local whisper.cpp server (the `server` example binary), e.g. http://127.0.0.1:8081 "
