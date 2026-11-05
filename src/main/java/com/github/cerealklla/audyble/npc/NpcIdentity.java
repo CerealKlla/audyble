@@ -16,7 +16,7 @@ import com.mojang.serialization.codecs.RecordCodecBuilder;
  * NpcIdentityStore#deceased()}.
  */
 public record NpcIdentity(NpcIdentityKey key, String name, String backstory, List<String> keyFacts,
-                           boolean alive, Optional<String> deathContext) {
+                           boolean alive, Optional<String> deathContext, Optional<Long> settlementPlaceId) {
 
     public static final Codec<NpcIdentity> CODEC = RecordCodecBuilder.create(i -> i.group(
             NpcIdentityKey.CODEC.fieldOf("key").forGetter(NpcIdentity::key),
@@ -24,11 +24,17 @@ public record NpcIdentity(NpcIdentityKey key, String name, String backstory, Lis
             Codec.STRING.fieldOf("backstory").forGetter(NpcIdentity::backstory),
             Codec.STRING.listOf().fieldOf("key_facts").forGetter(NpcIdentity::keyFacts),
             Codec.BOOL.fieldOf("alive").forGetter(NpcIdentity::alive),
-            Codec.STRING.optionalFieldOf("death_context").forGetter(NpcIdentity::deathContext)
+            Codec.STRING.optionalFieldOf("death_context").forGetter(NpcIdentity::deathContext),
+            Codec.LONG.optionalFieldOf("settlement_place_id").forGetter(NpcIdentity::settlementPlaceId)
     ).apply(i, NpcIdentity::new));
 
     public NpcIdentity withDeceased(String deathContext) {
-        return new NpcIdentity(key, name, backstory, keyFacts, false, Optional.of(deathContext));
+        return new NpcIdentity(key, name, backstory, keyFacts, false, Optional.of(deathContext), settlementPlaceId);
+    }
+
+    /** Lazily backfills a settlement onto an identity born before this field existed -- see {@code api.Audyble#resolveOrBeginBirth}. */
+    public NpcIdentity withSettlementPlaceId(long settlementPlaceId) {
+        return new NpcIdentity(key, name, backstory, keyFacts, alive, deathContext, Optional.of(settlementPlaceId));
     }
 
     /** Joins {@link #keyFacts} into a simple bullet list for direct concatenation into an LLM prompt. */

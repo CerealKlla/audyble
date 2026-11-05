@@ -73,7 +73,8 @@ public final class NpcDebugCommands {
         NpcIdentityKey key = parseKey(ctx);
         String name = StringArgumentType.getString(ctx, "name");
         String backstory = StringArgumentType.getString(ctx, "backstory");
-        Audyble.putIdentity(new NpcIdentity(key, name, backstory, List.of(), true, Optional.empty()));
+        Optional<Long> existingSettlementPlaceId = Audyble.findIdentity(key).flatMap(NpcIdentity::settlementPlaceId);
+        Audyble.putIdentity(new NpcIdentity(key, name, backstory, List.of(), true, Optional.empty(), existingSettlementPlaceId));
         ctx.getSource().sendSuccess(() -> Component.literal("Set identity " + key + " -> \"" + name + "\"."), false);
         return 1;
     }

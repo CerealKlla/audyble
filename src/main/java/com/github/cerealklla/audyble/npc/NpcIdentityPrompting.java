@@ -22,6 +22,14 @@ public final class NpcIdentityPrompting {
     private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor(
             r -> new Thread(r, "audyble-npc-birth"));
 
+    /** Total Ollama attempts (including the first) before falling back to a mechanical disambiguator. */
+    private static final int MAX_NAME_ATTEMPTS = 3;
+
+    /** Stable, deterministic suffixes for the rare case a settlement's name pool collides 3 times in a row. */
+    private static final String[] DISAMBIGUATING_EPITHETS = {
+            "the Younger", "the Elder", "of the North Road", "of the West Gate", "the Second"
+    };
+
     private NpcIdentityPrompting() {
     }
 
@@ -37,7 +45,7 @@ public final class NpcIdentityPrompting {
      * (set by the caller before this was ever invoked) stays in place either way, so a bad/missing
      * response never leaves the NPC without SOME identity.
      */
-    public static void generateAsync(NpcIdentity placeholder, LoreEntry lore, String settlementName) {
+    public static void generateAsync(NpcIdentity placeholder, LoreEntry lore, String settlementName, Long settlementPlaceId) {
         EXECUTOR.submit(() -> {
             try {
                 // Real settlement name (2026-11-04) -- without this, nothing in the birth prompt ever
@@ -49,22 +57,62 @@ public final class NpcIdentityPrompting {
                         : "";
                 String systemPrompt = WorldLore.TEXT + "\n\nThis settlement: " + settlementLine + lore.text();
                 String roleName = placeholder.key().role().name().toLowerCase(Locale.ROOT);
-                String userMessage = "Generate a brand-new " + roleName + " character for this settlement. "
-                        + "Respond in EXACTLY this format and nothing else -- no preamble, no extra commentary:\n"
-                        + "NAME: <a short first and last name fitting this world>\n"
-                        + "BACKSTORY: <2 to 4 sentences of personal backstory>\n"
-                        + "FACT: <one short fact about them>\n"
-                        + "FACT: <one short fact about them>\n"
-                        + "FACT: <one short fact about them>";
+
+                // No-repeat-names-within-a-settlement (2026-11-04) -- births are already strictly
+                // sequential (this whole class runs on one single-thread EXECUTOR), so by the time this
+                // task runs, every earlier birth in this same settlement has already been persisted.
+                // Wandering Traders (settlementPlaceId == null) have no settlement, so this is skipped
+                // for them entirely -- the constraint is explicitly "within a settlement" only.
+                List<String> usedNames = settlementPlaceId != null
+                        ? new ArrayList<>(NpcIdentityStore.namesInSettlement(settlementPlaceId))
+                        : List.of();
 
                 OllamaClient ollama = new OllamaClient(AudybleConfig.OLLAMA_BASE_URL.get(), AudybleConfig.OLLAMA_MODEL.get());
-                String reply = ollama.chat(systemPrompt, List.of(), userMessage);
-                NpcIdentity generated = parse(placeholder, reply);
+                NpcIdentity generated = null;
+                String lastReply = null;
+                for (int attempt = 1; attempt <= MAX_NAME_ATTEMPTS; attempt++) {
+                    String userMessage = "Generate a brand-new " + roleName + " character for this settlement. "
+                            + "Respond in EXACTLY this format and nothing else -- no preamble, no extra commentary:\n"
+                            + "NAME: <a short first and last name fitting this world>\n"
+                            + "BACKSTORY: <2 to 4 sentences of personal backstory>\n"
+                            + "FACT: <one short fact about them>\n"
+                            + "FACT: <one short fact about them>\n"
+                            + "FACT: <one short fact about them>"
+                            + (usedNames.isEmpty() ? "" : "\nNames already in use in this settlement -- do NOT reuse any of these: "
+                                    + String.join(", ", usedNames) + ".");
+
+                    lastReply = ollama.chat(systemPrompt, List.of(), userMessage);
+                    NpcIdentity candidate = parse(placeholder, lastReply);
+                    if (candidate == null) {
+                        break; // unparseable -- retrying won't help, fall through to the placeholder-stays-in-place branch below.
+                    }
+                    boolean collides = usedNames.stream().anyMatch(n -> n.equalsIgnoreCase(candidate.name()));
+                    if (!collides) {
+                        generated = candidate;
+                        break;
+                    }
+                    usedNames.add(candidate.name()); // also exclude this rejected name on the next attempt.
+                }
+
+                if (generated == null && lastReply != null) {
+                    // Every attempt either collided or (rare) kept re-parsing fine but kept colliding --
+                    // apply a deterministic mechanical fallback rather than looping forever or leaving
+                    // two NPCs in the same settlement with the literal same name.
+                    NpcIdentity lastCandidate = parse(placeholder, lastReply);
+                    if (lastCandidate != null) {
+                        String epithet = DISAMBIGUATING_EPITHETS[Math.abs(placeholder.key().hashCode()) % DISAMBIGUATING_EPITHETS.length];
+                        generated = new NpcIdentity(lastCandidate.key(), lastCandidate.name() + " " + epithet,
+                                lastCandidate.backstory(), lastCandidate.keyFacts(), true, Optional.empty(), placeholder.settlementPlaceId());
+                        AudybleMod.LOGGER.warn("Audyble NPC birth name collided {} times in settlement for {} -- disambiguated to '{}'",
+                                MAX_NAME_ATTEMPTS, placeholder.key(), generated.name());
+                    }
+                }
+
                 if (generated != null) {
                     NpcIdentityStore.put(generated);
                 } else {
                     AudybleMod.LOGGER.warn("Audyble NPC birth generation returned an unparseable reply for {} -- leaving placeholder identity in place: {}",
-                            placeholder.key(), reply);
+                            placeholder.key(), lastReply);
                 }
             } catch (Exception e) {
                 AudybleMod.LOGGER.warn("Audyble NPC birth generation failed for {} -- leaving placeholder identity in place", placeholder.key(), e);
@@ -89,6 +137,6 @@ public final class NpcIdentityPrompting {
         if (name == null || name.isBlank() || backstory == null || backstory.isBlank()) {
             return null;
         }
-        return new NpcIdentity(placeholder.key(), name, backstory, List.copyOf(facts), true, Optional.empty());
+        return new NpcIdentity(placeholder.key(), name, backstory, List.copyOf(facts), true, Optional.empty(), placeholder.settlementPlaceId());
     }
 }

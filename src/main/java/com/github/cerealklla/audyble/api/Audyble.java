@@ -68,16 +68,24 @@ public final class Audyble {
     public static NpcIdentity resolveOrBeginBirth(NpcIdentityKey key, Long settlementPlaceId, String settlementName) {
         Optional<NpcIdentity> existing = NpcIdentityStore.find(key);
         if (existing.isPresent()) {
-            return existing.get();
+            NpcIdentity found = existing.get();
+            // Lazy backfill (2026-11-04) -- an identity born before settlementPlaceId existed on this
+            // record gets it filled in the next time its own spawn ticker calls this, no migration
+            // script needed; this is also what lets namesInSettlement() see pre-existing real names.
+            if (found.settlementPlaceId().isEmpty() && settlementPlaceId != null) {
+                found = NpcIdentityStore.put(found.withSettlementPlaceId(settlementPlaceId));
+            }
+            return found;
         }
         String roleName = key.role().name();
         String displayRole = roleName.charAt(0) + roleName.substring(1).toLowerCase(Locale.ROOT);
-        NpcIdentity placeholder = new NpcIdentity(key, "Unnamed " + displayRole, "", List.of(), true, Optional.empty());
+        NpcIdentity placeholder = new NpcIdentity(key, "Unnamed " + displayRole, "", List.of(), true,
+                Optional.empty(), Optional.ofNullable(settlementPlaceId));
         NpcIdentityStore.put(placeholder);
         LoreEntry lore = settlementPlaceId != null
                 ? SettlementLoreStore.getOrAssign(settlementPlaceId)
                 : new LoreEntry(-1, "An unremarkable settlement, like many others along the road.", Optional.empty());
-        NpcIdentityPrompting.generateAsync(placeholder, lore, settlementName);
+        NpcIdentityPrompting.generateAsync(placeholder, lore, settlementName, settlementPlaceId);
         return placeholder;
     }
 

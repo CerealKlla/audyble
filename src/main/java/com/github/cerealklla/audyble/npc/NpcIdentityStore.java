@@ -45,4 +45,16 @@ public final class NpcIdentityStore {
     public static List<NpcIdentity> deceased() {
         return STORE.all().values().stream().filter(id -> !id.alive()).toList();
     }
+
+    /**
+     * Every real generated name already used in {@code placeId}'s settlement, living or dead -- used
+     * at birth time so a new NPC's name doesn't repeat one already in the same town. Deliberately
+     * includes deceased identities too; reusing a dead character's name is just as much a repeat.
+     */
+    public static List<String> namesInSettlement(long placeId) {
+        return STORE.all().values().stream()
+                .filter(id -> id.settlementPlaceId().isPresent() && id.settlementPlaceId().get() == placeId)
+                .map(NpcIdentity::name)
+                .toList();
+    }
 }
