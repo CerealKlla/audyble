@@ -43,9 +43,11 @@ public final class KokoroTtsClient {
         body.addProperty("voice", voice);
         body.addProperty("response_format", "wav");
 
+        // 60s, not 30 -- same reasoning as OllamaClient's own 120s bump (confirmed live 2026-11-04 a
+        // local LLM call can badly exceed 30s on first real use); runs on the same background thread.
         HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/v1/audio/speech"))
                 .header("Content-Type", "application/json")
-                .timeout(Duration.ofSeconds(30))
+                .timeout(Duration.ofSeconds(60))
                 .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body)))
                 .build();
 

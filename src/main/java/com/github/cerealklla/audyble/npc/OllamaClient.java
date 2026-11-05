@@ -61,10 +61,22 @@ public final class OllamaClient {
         body.addProperty("model", model);
         body.add("messages", messages);
         body.addProperty("stream", false);
+        // Confirmed live 2026-11-04: Ollama unloads a model from VRAM after its default 5-minute idle
+        // timeout, and reloading it (several GB off disk) adds a real multi-second delay to the next
+        // reply, even on a fast GPU -- "-1" keeps it loaded indefinitely once any NPC conversation has
+        // happened at all, trading a small amount of permanently-held VRAM for consistently fast
+        // replies instead of a slow one every time a player returns after a short gap.
+        body.addProperty("keep_alive", -1);
 
+        // 120s, not 30 -- confirmed live 2026-11-04 that a real local Ollama call can genuinely take
+        // this long (a model's first real inference after being freshly pulled has to load several GB
+        // off disk into memory, worse under CPU-only inference or when a second concurrent Ollama call
+        // -- e.g. a birth-generation request -- is competing for the same instance). This always runs
+        // on NpcConversationEngine's own background pipelineExecutor thread, never the server thread,
+        // so a long wait here has no effect on the game itself.
         HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/api/chat"))
                 .header("Content-Type", "application/json")
-                .timeout(Duration.ofSeconds(30))
+                .timeout(Duration.ofSeconds(120))
                 .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body)))
                 .build();
 

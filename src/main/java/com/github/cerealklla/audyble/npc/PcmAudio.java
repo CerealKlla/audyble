@@ -38,6 +38,16 @@ public final class PcmAudio {
             if (chunkId == 0x61746164) {
                 dataOffset = pos + 8;
                 dataLength = chunkSize;
+                // Confirmed live 2026-11-04: Kokoro's real WAV output (produced via ffmpeg/
+                // libavformat under the hood, per its own "Lavf" LIST/INFO tag) declares this chunk's
+                // size as the streaming "unknown length, read until EOF" sentinel 0xFFFFFFFF (-1 as a
+                // signed int) instead of a real byte count -- taking that literally produced
+                // `new short[-1 / 2]` = an EMPTY array, decoding to total silence despite Kokoro
+                // genuinely synthesizing real multi-second speech. A negative or out-of-bounds
+                // declared size means "trust EOF instead," not "there is no data."
+                if (dataLength < 0 || dataOffset + dataLength > wav.length) {
+                    dataLength = wav.length - dataOffset;
+                }
                 break;
             }
             pos += 8 + chunkSize + (chunkSize % 2);

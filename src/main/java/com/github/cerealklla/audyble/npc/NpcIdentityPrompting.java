@@ -25,6 +25,11 @@ public final class NpcIdentityPrompting {
     private NpcIdentityPrompting() {
     }
 
+    /** Called from {@link NpcConversationEngine#onServerStopping} -- see that method's own doc for why this matters. */
+    public static void shutdown() {
+        EXECUTOR.shutdownNow();
+    }
+
     /**
      * Asynchronously generates a real name/backstory/key facts for {@code placeholder} via Ollama,
      * persisting the result (overwriting the placeholder) once it returns. A no-op beyond logging a
@@ -32,10 +37,17 @@ public final class NpcIdentityPrompting {
      * (set by the caller before this was ever invoked) stays in place either way, so a bad/missing
      * response never leaves the NPC without SOME identity.
      */
-    public static void generateAsync(NpcIdentity placeholder, LoreEntry lore) {
+    public static void generateAsync(NpcIdentity placeholder, LoreEntry lore, String settlementName) {
         EXECUTOR.submit(() -> {
             try {
-                String systemPrompt = WorldLore.TEXT + "\n\nThis settlement: " + lore.text();
+                // Real settlement name (2026-11-04) -- without this, nothing in the birth prompt ever
+                // names the actual town, so Ollama would invent/hallucinate its own place name instead
+                // of using the real one. Blank/null (settlement name unresolvable, or a wandering NPC
+                // with no settlement at all) just omits the sentence rather than naming a fake one.
+                String settlementLine = (settlementName != null && !settlementName.isBlank())
+                        ? "This settlement is called " + settlementName + ". "
+                        : "";
+                String systemPrompt = WorldLore.TEXT + "\n\nThis settlement: " + settlementLine + lore.text();
                 String roleName = placeholder.key().role().name().toLowerCase(Locale.ROOT);
                 String userMessage = "Generate a brand-new " + roleName + " character for this settlement. "
                         + "Respond in EXACTLY this format and nothing else -- no preamble, no extra commentary:\n"

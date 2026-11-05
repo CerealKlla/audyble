@@ -46,4 +46,9 @@ public final class SettlemyntsIdentityBridge {
         Optional<UUID> standId = com.github.cerealklla.settlemynts.api.Settlemynts.resolveGuardStandId(entity);
         return standId.map(id -> new NpcIdentityKey(id, PlotRole.GUARD));
     }
+
+    /** {@code entity}'s owning settlement's real, player-given name, if resolvable -- see {@code api.Settlemynts#resolveSettlementName}'s own doc. */
+    public static Optional<String> resolveSettlementName(Entity entity) {
+        return com.github.cerealklla.settlemynts.api.Settlemynts.resolveSettlementName(entity);
+    }
 }

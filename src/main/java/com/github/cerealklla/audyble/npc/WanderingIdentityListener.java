@@ -21,6 +21,6 @@ public final class WanderingIdentityListener {
         if (event.getLevel().isClientSide() || !(event.getEntity() instanceof WanderingTrader trader)) {
             return;
         }
-        Audyble.resolveOrBeginBirth(NpcIdentityKey.wandering(trader.getUUID()), null);
+        Audyble.resolveOrBeginBirth(NpcIdentityKey.wandering(trader.getUUID()), null, "");
     }
 }

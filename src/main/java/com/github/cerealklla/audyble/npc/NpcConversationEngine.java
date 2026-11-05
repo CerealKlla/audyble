@@ -38,6 +38,7 @@ import net.minecraft.world.entity.npc.wanderingtrader.WanderingTrader;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
+import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
 /**
@@ -110,6 +111,21 @@ public final class NpcConversationEngine {
 
     public void onServerStarted(VoicechatServerApi api) {
         this.api = api;
+    }
+
+    /**
+     * {@code pipelineExecutor}'s thread is never a daemon thread (the default {@link
+     * Executors#newSingleThreadExecutor} shape) and was never shut down anywhere -- confirmed live
+     * 2026-11-04 as the real cause of the dedicated server hanging for the full 60s graceful-stop
+     * window and needing a force-kill, twice in a row, right after Ollama's own HTTP timeout was
+     * deliberately widened to 120s (a slow/hung in-flight Ollama call now blocks this thread far
+     * longer, and nothing was ever telling it to stop). {@code shutdownNow()} interrupts any
+     * in-flight HTTP call immediately rather than waiting for it to finish or time out on its own.
+     */
+    @SubscribeEvent
+    public void onServerStopping(ServerStoppingEvent event) {
+        pipelineExecutor.shutdownNow();
+        NpcIdentityPrompting.shutdown();
     }
 
     /** Called by {@link com.github.cerealklla.audyble.voice.AudyblePlugin} for every microphone packet. */
@@ -191,12 +207,15 @@ public final class NpcConversationEngine {
 
     private void runPipeline(UUID playerId, UUID npcEntityId, short[] pcm48k) {
         try {
+            if (isTooQuietToBeSpeech(pcm48k)) {
+                return;
+            }
             short[] pcm16k = PcmAudio.resample(pcm48k, TARGET_SAMPLE_RATE, WHISPER_SAMPLE_RATE);
             byte[] wav16k = PcmAudio.toWav(pcm16k, WHISPER_SAMPLE_RATE);
 
             WhisperSttClient whisper = new WhisperSttClient(AudybleConfig.WHISPER_BASE_URL.get());
             String transcript = whisper.transcribe(wav16k);
-            if (transcript.isBlank()) {
+            if (transcript.isBlank() || isNonSpeechHallucination(transcript)) {
                 return;
             }
             AudybleMod.LOGGER.info("Audyble NPC heard: {}", transcript);
@@ -214,12 +233,16 @@ public final class NpcConversationEngine {
             ConversationState convo = conversations.computeIfAbsent(pairKey,
                     k -> new ConversationState(resolveIdentityKey(npcEntity)));
 
-            NpcIdentity identity = Audyble.resolveOrBeginBirth(convo.npcKey, null);
+            String settlementName = resolveSettlementName(npcEntity).orElse("");
+            NpcIdentity identity = Audyble.resolveOrBeginBirth(convo.npcKey, null, settlementName);
             PlayerRelationship relationship = Audyble.getRelationship(convo.npcKey, playerId);
-            String systemPrompt = buildSystemPrompt(identity, relationship, npcConfig);
+            String systemPrompt = buildSystemPrompt(identity, relationship, npcConfig, settlementName);
 
             OllamaClient ollama = new OllamaClient(AudybleConfig.OLLAMA_BASE_URL.get(), AudybleConfig.OLLAMA_MODEL.get());
-            String reply = ollama.chat(systemPrompt, List.copyOf(convo.history), transcript);
+            String reply = stripStageDirections(ollama.chat(systemPrompt, List.copyOf(convo.history), transcript));
+            if (reply.isBlank()) {
+                return;
+            }
 
             synchronized (convo.history) {
                 convo.history.addLast(new OllamaClient.Turn("user", transcript));
@@ -242,9 +265,39 @@ public final class NpcConversationEngine {
     }
 
     /** World Lore + this NPC's own persisted backstory/key facts + the player's relationship summary + the character's own behavior prompt (unchanged). */
-    private static String buildSystemPrompt(NpcIdentity identity, PlayerRelationship relationship, ConversationalNpcConfig npcConfig) {
+    /**
+     * Confirmed live 2026-11-04: without this, Ollama's replies drift into writing the conversation
+     * like a script/story -- narrating actions ("pauses, looks around") rather than just speaking --
+     * which Kokoro then reads aloud completely literally, since it has no idea this is meant to be
+     * pure spoken dialogue. Placed first and reinforced with a defensive strip in {@link
+     * #stripStageDirections} for whenever the model still slips into asterisk-wrapped narration
+     * despite the instruction.
+     */
+    private static final String SPOKEN_DIALOGUE_ONLY_INSTRUCTION =
+            "You are having a real, out-loud spoken conversation -- not writing a story or script. "
+                    + "Respond with ONLY the words you'd actually say out loud. Never narrate actions, "
+                    + "gestures, or your surroundings (e.g. never write things like \"*pauses, looks "
+                    + "around*\" or \"(clicks tongue)\") -- if it wouldn't be heard as speech, don't write it.\n";
+
+    private static final java.util.regex.Pattern STAGE_DIRECTION = java.util.regex.Pattern.compile("\\*[^*]*\\*");
+
+    /** Defensive cleanup for whenever the model still slips into asterisk-wrapped action narration despite {@link #SPOKEN_DIALOGUE_ONLY_INSTRUCTION}. */
+    private static String stripStageDirections(String reply) {
+        return STAGE_DIRECTION.matcher(reply).replaceAll("").trim();
+    }
+
+    private static String buildSystemPrompt(NpcIdentity identity, PlayerRelationship relationship, ConversationalNpcConfig npcConfig, String settlementName) {
         StringBuilder prompt = new StringBuilder();
+        prompt.append(SPOKEN_DIALOGUE_ONLY_INSTRUCTION);
         prompt.append(WorldLore.TEXT).append('\n');
+        if (!settlementName.isBlank()) {
+            // Real settlement name (2026-11-04) -- without this stated explicitly every turn, nothing
+            // here ever names the actual town, so the model would invent/hallucinate its own place
+            // name instead of using the real one (confirmed live: a guard referenced a settlement by
+            // a made-up name until this was added).
+            prompt.append("The settlement you live in is called ").append(settlementName)
+                    .append(". Always refer to it by this real name -- never invent or use a different one.\n");
+        }
         prompt.append("You are ").append(identity.name()).append(". ").append(identity.backstory()).append('\n');
         String keyFacts = identity.keyFactsAsPromptText();
         if (!keyFacts.isBlank()) {
@@ -295,6 +348,41 @@ public final class NpcConversationEngine {
         }
     }
 
+    /**
+     * A cheap local VAD gate, checked before ever calling Whisper at all -- confirmed live
+     * 2026-11-04 that ambient mic noise reaching Whisper gets hallucinated into real-looking short
+     * words (not just Whisper's own bracketed non-speech tags), triggering unwanted replies and
+     * piling up overlapping voice channels. Plain RMS amplitude over the raw 48kHz capture.
+     */
+    private static boolean isTooQuietToBeSpeech(short[] pcm) {
+        if (pcm.length == 0) {
+            return true;
+        }
+        long sumSquares = 0;
+        for (short sample : pcm) {
+            sumSquares += (long) sample * sample;
+        }
+        double rms = Math.sqrt((double) sumSquares / pcm.length);
+        return rms < AudybleConfig.NPC_MIN_SPEECH_RMS.get();
+    }
+
+    private static final java.util.regex.Pattern NON_SPEECH_HALLUCINATION =
+            java.util.regex.Pattern.compile("^[\\[(].*[])]$");
+
+    /**
+     * Whisper's real, well-known convention for "nothing was actually said" (ambient mic noise,
+     * silence, etc.) is to hallucinate one of its own bracket/paren-wrapped non-speech tags --
+     * {@code [BLANK_AUDIO]}, {@code [ Laughter ]}, {@code (clicks tongue)}, {@code [inaudible]}, etc.
+     * -- instead of genuinely returning an empty string. Confirmed live 2026-11-04: without this
+     * filter these pass the plain {@code isBlank()} check and get treated as a real thing the player
+     * said, producing an endless unprompted reply loop whenever a player's mic stays open picking up
+     * ambient noise near an NPC. A real sentence never starts with an opening bracket/paren AND ends
+     * with its matching close across the *entire* trimmed string, so this is a safe, narrow match.
+     */
+    private static boolean isNonSpeechHallucination(String transcript) {
+        return NON_SPEECH_HALLUCINATION.matcher(transcript.trim()).matches();
+    }
+
     /** Resolves {@code entity}'s persistent identity key -- a real plot-bound worker/Guard via Settlemynts, otherwise its own entity UUID as a wandering identity (Wandering Trader, or a manually bound test entity). */
     private NpcIdentityKey resolveIdentityKey(Entity entity) {
         if (SettlemyntsIdentityBridge.isLoaded()) {
@@ -304,6 +392,14 @@ public final class NpcConversationEngine {
             }
         }
         return NpcIdentityKey.wandering(entity.getUUID());
+    }
+
+    /** {@code entity}'s real settlement name, if it's a Settlemynts plot-bound worker/guard with one -- see {@link #buildSystemPrompt}. */
+    private Optional<String> resolveSettlementName(Entity entity) {
+        if (SettlemyntsIdentityBridge.isLoaded()) {
+            return SettlemyntsIdentityBridge.resolveSettlementName(entity);
+        }
+        return Optional.empty();
     }
 
     private void playOnNpc(UUID npcEntityId, short[] pcm) {
@@ -316,6 +412,23 @@ public final class NpcConversationEngine {
         if (channel == null) {
             return;
         }
+        // Confirmed against SVC's own real decompiled source 2026-11-04: EntityAudioChannel ties
+        // playback to this entity's UUID, and the CLIENT resolves that UUID's own live position for
+        // 3D audio -- the same mechanism real player proximity voice uses, so this should already be
+        // positional by construction. Left unset, `distance` defaults to SVC's own generic
+        // Utils.getDefaultDistanceServer() value (not tuned for "a person talking," closer to the
+        // mod's overall max voice chat range). Confirmed live 2026-11-04: calling setCategory with
+        // an arbitrary, never-registered category string ("audyble:npc_voice") correlates exactly
+        // with every single packet send to the listener starting to fail silently right after this
+        // was added (SVC's own send path swallows the real exception -- see NpcConversationEngine's
+        // other notes on this -- but the timing match across two independent live tests, including
+        // after a full player relog that should have ruled out a stale-connection cause, is strong
+        // enough to treat this as the real cause rather than coincidence). Category was never
+        // actually confirmed necessary for positional audio in the first place (that comes from the
+        // entity UUID, not the category) -- dropped entirely rather than chasing SVC's own category
+        // registration requirements further. `distance` alone is kept; it's a plain float field with
+        // no equivalent risk.
+        channel.setDistance((float) (AudybleConfig.NPC_INTERACTION_RANGE.get() * 2.0));
         var encoder = currentApi.createEncoder();
         var player = currentApi.createAudioPlayer(channel, encoder, pcm);
         player.setOnStopped(encoder::close);
