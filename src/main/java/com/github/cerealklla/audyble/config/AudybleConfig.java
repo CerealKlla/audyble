@@ -105,14 +105,16 @@ public final class AudybleConfig {
                     + "-- use a literal IPv4 address, not 'localhost' (see ollamaBaseUrl's own comment for why).")
             .define("kokoroBaseUrl", "http://127.0.0.1:8880");
 
-    public static final ModConfigSpec.ConfigValue<String> KOKORO_VOICE = BUILDER
-            .comment("Kokoro voice name, e.g. af_heart, am_michael -- see the Kokoro project's own voice list. "
-                    + "Default changed to a male voice 2026-11-05 (was af_heart) -- every NPC entity this mod "
-                    + "spawns renders as a male-presenting humanoid (Villager's own base model, or the "
-                    + "reskinned-Zombie Guard/Tavern placeholder renderers), and this is one single voice used "
-                    + "for every NPC conversation, so the two need to agree until real per-NPC voice variety "
-                    + "exists.")
-            .define("kokoroVoice", "am_michael");
+    public static final ModConfigSpec.ConfigValue<String> KOKORO_VOICE_MALE = BUILDER
+            .comment("Kokoro voice name for a male NPC, e.g. am_michael -- see the Kokoro project's own voice "
+                    + "list. Split from a single kokoroVoice into kokoroVoiceMale/kokoroVoiceFemale 2026-11-05, "
+                    + "once Settlemynts NPCs gained a real per-NPC gender (npc.NpcGender) -- see "
+                    + "npc.NpcConversationEngine for where this is picked.")
+            .define("kokoroVoiceMale", "am_michael");
+
+    public static final ModConfigSpec.ConfigValue<String> KOKORO_VOICE_FEMALE = BUILDER
+            .comment("Kokoro voice name for a female NPC, e.g. af_heart -- see kokoroVoiceMale's own comment.")
+            .define("kokoroVoiceFemale", "af_heart");
 
     public static final ModConfigSpec.ConfigValue<String> WHISPER_BASE_URL = BUILDER
             .comment("Base URL of a local whisper.cpp server (the `server` example binary), e.g. http://127.0.0.1:8081 "

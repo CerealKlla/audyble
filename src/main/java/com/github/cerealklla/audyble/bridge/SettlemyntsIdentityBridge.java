@@ -30,8 +30,15 @@ public final class SettlemyntsIdentityBridge {
         return ModList.get().isLoaded("settlemynts");
     }
 
-    /** A plain, Audyble-local copy of Settlemynts' {@code api.Settlemynts.NpcIdentitySnapshot} -- see this class's own doc for why the real Settlemynts type never crosses this boundary. {@code ownerId}/{@code roleName} together are the opaque handle a caller holds onto for later relationship reads/writes, without needing the live entity again. */
-    public record IdentitySnapshot(UUID ownerId, String roleName, String name, String backstory, String keyFactsPromptText) {
+    /**
+     * A plain, Audyble-local copy of Settlemynts' {@code api.Settlemynts.NpcIdentitySnapshot} -- see
+     * this class's own doc for why the real Settlemynts type never crosses this boundary. {@code
+     * ownerId}/{@code roleName} together are the opaque handle a caller holds onto for later
+     * relationship reads/writes, without needing the live entity again. {@code genderName} is {@code
+     * npc.NpcGender}'s plain enum name ("MALE"/"FEMALE"), added 2026-11-05 so the conversation engine
+     * can pick a matching Kokoro voice -- see {@code npc.NpcConversationEngine}.
+     */
+    public record IdentitySnapshot(UUID ownerId, String roleName, String name, String backstory, String keyFactsPromptText, String genderName) {
     }
 
     /**
@@ -49,7 +56,7 @@ public final class SettlemyntsIdentityBridge {
         com.github.cerealklla.settlemynts.api.Settlemynts.NpcIdentitySnapshot snapshot =
                 com.github.cerealklla.settlemynts.api.Settlemynts.resolveOrBeginNpcIdentity(level, entity);
         return Optional.of(new IdentitySnapshot(snapshot.ownerId(), snapshot.roleName(), snapshot.name(),
-                snapshot.backstory(), snapshot.keyFactsPromptText()));
+                snapshot.backstory(), snapshot.keyFactsPromptText(), snapshot.genderName()));
     }
 
     /** {@code playerId}'s current relationship summary with the NPC identified by {@code handle}, or blank if they've never spoken before, Settlemynts isn't loaded, or {@code handle} is {@code null} (no identity was ever resolved for this conversation). */

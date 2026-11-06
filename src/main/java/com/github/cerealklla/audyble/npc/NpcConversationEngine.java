@@ -266,7 +266,13 @@ public final class NpcConversationEngine {
             }
             convo.lastTurnAtMillis = System.currentTimeMillis();
 
-            KokoroTtsClient kokoro = new KokoroTtsClient(AudybleConfig.KOKORO_BASE_URL.get(), AudybleConfig.KOKORO_VOICE.get());
+            // "FEMALE"/"MALE" (npc.NpcGender's plain enum name, see SettlemyntsIdentityBridge's own
+            // doc) picks the matching voice -- defaults to male if unresolved (no Settlemynts
+            // identity at all), same as this mod's own pre-gender behavior.
+            boolean female = identity.map(SettlemyntsIdentityBridge.IdentitySnapshot::genderName)
+                    .filter("FEMALE"::equals).isPresent();
+            String voice = female ? AudybleConfig.KOKORO_VOICE_FEMALE.get() : AudybleConfig.KOKORO_VOICE_MALE.get();
+            KokoroTtsClient kokoro = new KokoroTtsClient(AudybleConfig.KOKORO_BASE_URL.get(), voice);
             byte[] ttsWav = kokoro.synthesize(reply);
             PcmAudio.DecodedWav decoded = PcmAudio.fromWav(ttsWav);
             short[] playbackPcm = PcmAudio.resample(decoded.samples(), decoded.sampleRate(), TARGET_SAMPLE_RATE);
