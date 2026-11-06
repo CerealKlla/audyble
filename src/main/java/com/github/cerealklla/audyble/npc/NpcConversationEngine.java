@@ -224,63 +224,91 @@ public final class NpcConversationEngine {
                 return;
             }
             AudybleMod.LOGGER.info("Audyble NPC heard: {}", transcript);
-
-            Entity npcEntity = findEntityAnywhere(npcEntityId);
-            if (npcEntity == null) {
-                return;
-            }
-            ConversationalNpcConfig npcConfig = resolveNpcConfig(npcEntity);
-            if (npcConfig == null) {
-                return;
-            }
-
-            ConversationKey pairKey = new ConversationKey(npcEntityId, playerId);
-            ConversationState convo = conversations.computeIfAbsent(pairKey,
-                    k -> new ConversationState(resolveInitialIdentity(npcEntity)));
-
-            String settlementName = resolveSettlementName(npcEntity).orElse("");
-            // Re-resolved fresh every turn (not just reusing convo.initialIdentity) so a name/backstory
-            // that finished async-generating mid-conversation shows up without waiting for a new
-            // conversation to start -- resolveOrBeginBirth is a cheap store lookup after the first call,
-            // same as the old Audyble-owned version this replaced.
-            Optional<SettlemyntsIdentityBridge.IdentitySnapshot> identity = npcEntity.level() instanceof ServerLevel npcLevel
-                    ? SettlemyntsIdentityBridge.resolveOrBeginBirth(npcLevel, npcEntity)
-                    : Optional.empty();
-            String npcName = identity.map(SettlemyntsIdentityBridge.IdentitySnapshot::name)
-                    .filter(n -> !n.isBlank()).orElse(npcConfig.characterName());
-            String backstory = identity.map(SettlemyntsIdentityBridge.IdentitySnapshot::backstory).orElse("");
-            String keyFacts = identity.map(SettlemyntsIdentityBridge.IdentitySnapshot::keyFactsPromptText).orElse("");
-            String relationshipSummary = SettlemyntsIdentityBridge.getRelationshipSummary(convo.initialIdentity, playerId);
-            String systemPrompt = buildSystemPrompt(npcName, backstory, keyFacts, relationshipSummary, npcConfig, settlementName);
-
-            String reply = stripStageDirections(Nuclyus.chat(systemPrompt, List.copyOf(convo.history), transcript));
-            if (reply.isBlank()) {
-                return;
-            }
-
-            synchronized (convo.history) {
-                convo.history.addLast(new OllamaClient.Turn("user", transcript));
-                convo.history.addLast(new OllamaClient.Turn("assistant", reply));
-                while (convo.history.size() > MAX_HISTORY_TURNS * 2) {
-                    convo.history.removeFirst();
-                }
-            }
-            convo.lastTurnAtMillis = System.currentTimeMillis();
-
-            // "FEMALE"/"MALE" (npc.NpcGender's plain enum name, see SettlemyntsIdentityBridge's own
-            // doc) picks the matching voice -- defaults to male if unresolved (no Settlemynts
-            // identity at all), same as this mod's own pre-gender behavior.
-            boolean female = identity.map(SettlemyntsIdentityBridge.IdentitySnapshot::genderName)
-                    .filter("FEMALE"::equals).isPresent();
-            String voice = female ? AudybleConfig.KOKORO_VOICE_FEMALE.get() : AudybleConfig.KOKORO_VOICE_MALE.get();
-            byte[] ttsWav = Nuclyus.speak(voice, reply);
-            PcmAudio.DecodedWav decoded = PcmAudio.fromWav(ttsWav);
-            short[] playbackPcm = PcmAudio.resample(decoded.samples(), decoded.sampleRate(), TARGET_SAMPLE_RATE);
-
-            playOnNpc(npcEntityId, playbackPcm);
+            respondToTranscript(playerId, npcEntityId, transcript);
         } catch (Exception e) {
             AudybleMod.LOGGER.error("Audyble NPC conversation pipeline failed", e);
         }
+    }
+
+    /**
+     * Resolves the nearest conversational NPC to {@code player} (same proximity check voice capture
+     * uses) and feeds {@code message} into the pipeline as if it had been spoken -- the no-microphone
+     * text fallback (see {@code api.Audyble#sayToNearestNpc}). Runs on {@link #pipelineExecutor}, not
+     * the calling thread, same as the voice path.
+     *
+     * @return {@code false} if no conversational NPC is currently in range.
+     */
+    public boolean sayToNearestNpc(ServerPlayer player, String message) {
+        Entity npc = findNearestConversationalNpc(player);
+        if (npc == null) {
+            return false;
+        }
+        UUID npcEntityId = npc.getUUID();
+        pipelineExecutor.submit(() -> {
+            try {
+                respondToTranscript(player.getUUID(), npcEntityId, message);
+            } catch (Exception e) {
+                AudybleMod.LOGGER.error("Audyble NPC conversation pipeline failed", e);
+            }
+        });
+        return true;
+    }
+
+    /** The shared tail of the pipeline once a transcript exists, whether from Whisper (voice) or typed directly (text fallback) -- resolves the NPC's config/identity, calls the LLM, updates rolling history, synthesizes the reply, and plays it back on the NPC. A no-op (not an error) if {@code npcEntityId} no longer resolves to a real, still-conversational entity. */
+    private void respondToTranscript(UUID playerId, UUID npcEntityId, String transcript) throws Exception {
+        Entity npcEntity = findEntityAnywhere(npcEntityId);
+        if (npcEntity == null) {
+            return;
+        }
+        ConversationalNpcConfig npcConfig = resolveNpcConfig(npcEntity);
+        if (npcConfig == null) {
+            return;
+        }
+
+        ConversationKey pairKey = new ConversationKey(npcEntityId, playerId);
+        ConversationState convo = conversations.computeIfAbsent(pairKey,
+                k -> new ConversationState(resolveInitialIdentity(npcEntity)));
+
+        String settlementName = resolveSettlementName(npcEntity).orElse("");
+        // Re-resolved fresh every turn (not just reusing convo.initialIdentity) so a name/backstory
+        // that finished async-generating mid-conversation shows up without waiting for a new
+        // conversation to start -- resolveOrBeginBirth is a cheap store lookup after the first call,
+        // same as the old Audyble-owned version this replaced.
+        Optional<SettlemyntsIdentityBridge.IdentitySnapshot> identity = npcEntity.level() instanceof ServerLevel npcLevel
+                ? SettlemyntsIdentityBridge.resolveOrBeginBirth(npcLevel, npcEntity)
+                : Optional.empty();
+        String npcName = identity.map(SettlemyntsIdentityBridge.IdentitySnapshot::name)
+                .filter(n -> !n.isBlank()).orElse(npcConfig.characterName());
+        String backstory = identity.map(SettlemyntsIdentityBridge.IdentitySnapshot::backstory).orElse("");
+        String keyFacts = identity.map(SettlemyntsIdentityBridge.IdentitySnapshot::keyFactsPromptText).orElse("");
+        String relationshipSummary = SettlemyntsIdentityBridge.getRelationshipSummary(convo.initialIdentity, playerId);
+        String systemPrompt = buildSystemPrompt(npcName, backstory, keyFacts, relationshipSummary, npcConfig, settlementName);
+
+        String reply = stripStageDirections(Nuclyus.chat(systemPrompt, List.copyOf(convo.history), transcript));
+        if (reply.isBlank()) {
+            return;
+        }
+
+        synchronized (convo.history) {
+            convo.history.addLast(new OllamaClient.Turn("user", transcript));
+            convo.history.addLast(new OllamaClient.Turn("assistant", reply));
+            while (convo.history.size() > MAX_HISTORY_TURNS * 2) {
+                convo.history.removeFirst();
+            }
+        }
+        convo.lastTurnAtMillis = System.currentTimeMillis();
+
+        // "FEMALE"/"MALE" (npc.NpcGender's plain enum name, see SettlemyntsIdentityBridge's own
+        // doc) picks the matching voice -- defaults to male if unresolved (no Settlemynts
+        // identity at all), same as this mod's own pre-gender behavior.
+        boolean female = identity.map(SettlemyntsIdentityBridge.IdentitySnapshot::genderName)
+                .filter("FEMALE"::equals).isPresent();
+        String voice = female ? AudybleConfig.KOKORO_VOICE_FEMALE.get() : AudybleConfig.KOKORO_VOICE_MALE.get();
+        byte[] ttsWav = Nuclyus.speak(voice, reply);
+        PcmAudio.DecodedWav decoded = PcmAudio.fromWav(ttsWav);
+        short[] playbackPcm = PcmAudio.resample(decoded.samples(), decoded.sampleRate(), TARGET_SAMPLE_RATE);
+
+        playOnNpc(npcEntityId, playbackPcm);
     }
 
     /** World Lore + this NPC's own persisted backstory/key facts + the player's relationship summary + the character's own behavior prompt (unchanged). */
@@ -534,6 +562,25 @@ public final class NpcConversationEngine {
                                                                     "Bound " + target.getName().getString() + " as conversational NPC \""
                                                                             + characterName + "\"."), true);
                                                             return 1;
-                                                        })))))));
+                                                        }))))))
+                .then(Commands.literal("say")
+                        .then(Commands.argument("message", StringArgumentType.greedyString())
+                                .executes(ctx -> {
+                                    if (!(ctx.getSource().getEntity() instanceof ServerPlayer player)) {
+                                        ctx.getSource().sendFailure(Component.literal("Only a player can use this."));
+                                        return 0;
+                                    }
+                                    String message = StringArgumentType.getString(ctx, "message");
+                                    // No-microphone text fallback -- never broadcast anywhere (a
+                                    // command's own arguments aren't public chat), feeds directly into
+                                    // the same pipeline voice capture uses. sendSuccess(..., false)
+                                    // means this feedback goes only to the sender, never broadcast.
+                                    if (NpcConversationEngine.instance() != null && NpcConversationEngine.instance().sayToNearestNpc(player, message)) {
+                                        ctx.getSource().sendSuccess(() -> Component.literal("(said privately)"), false);
+                                    } else {
+                                        ctx.getSource().sendFailure(Component.literal("No one nearby to talk to."));
+                                    }
+                                    return 1;
+                                }))));
     }
 }

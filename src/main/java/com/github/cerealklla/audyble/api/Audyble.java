@@ -4,10 +4,16 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import com.github.cerealklla.audyble.npc.ConversationalNpcConfig;
+import com.github.cerealklla.audyble.npc.NpcAttachments;
+import com.github.cerealklla.audyble.npc.NpcConversationEngine;
 import com.github.cerealklla.audyble.npc.PlayerPronunciationStore;
 import com.github.cerealklla.audyble.voice.MurmurPlaylistStore;
 import com.github.cerealklla.audyble.voice.MusicLibrary;
 import com.github.cerealklla.audyble.voice.SongRequestFile;
+
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.Entity;
 
 /**
  * Public, stable cross-mod facade for Audyble -- named {@code Audyble} to match this suite's own
@@ -60,5 +66,31 @@ public final class Audyble {
     /** Whether the song-request box should be shown at all -- false when {@code murmurSongRequestFile} isn't configured. */
     public static boolean songRequestsEnabled() {
         return SongRequestFile.enabled();
+    }
+
+    /**
+     * Permanently binds {@code entity} as a conversational NPC -- same real mechanism the
+     * {@code /audyble npc bind} debug command uses, exposed here for a caller that wants to set this
+     * up structurally in code (e.g. Arryval's tutorial guide) rather than as an admin one-off.
+     * {@code systemPrompt} drives the character's actual behavior/content -- see {@code
+     * npc.NpcConversationEngine#buildSystemPrompt} for everything else automatically prepended
+     * (spoken-dialogue-only instruction, world lore, any resolved Settlemynts identity).
+     */
+    public static void bindConversationalNpc(Entity entity, String characterName, String systemPrompt) {
+        entity.setData(NpcAttachments.CONVERSATIONAL_NPC, new ConversationalNpcConfig(characterName, systemPrompt));
+    }
+
+    /**
+     * Feeds {@code message} directly into the conversation pipeline as if {@code player} had said it
+     * out loud to whichever conversational NPC is currently nearest them (same proximity resolution
+     * voice capture uses) -- the no-microphone text fallback. Never touches Whisper (it's already
+     * text) or public chat (never broadcast anywhere) -- the caller is responsible for not having
+     * broadcast {@code message} itself, this method only ever sends the NPC's own reply back to
+     * {@code player} privately.
+     *
+     * @return {@code false} if no conversational NPC is currently in range at all.
+     */
+    public static boolean sayToNearestNpc(ServerPlayer player, String message) {
+        return NpcConversationEngine.instance() != null && NpcConversationEngine.instance().sayToNearestNpc(player, message);
     }
 }
