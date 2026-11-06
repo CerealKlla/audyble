@@ -474,18 +474,28 @@ public final class NpcConversationEngine {
 
     /**
      * True for an explicitly {@code /audyble npc bind}-bound test entity, a real vanilla {@link
-     * WanderingTrader} (every one gets a real Phase 5b Milestone 3 identity), or a real plot-bound
-     * worker/Guard recognized via {@link SettlemyntsIdentityBridge#isRecognizedWorkerOrGuard} --
-     * deliberately NOT true for an arbitrary mob, so ordinary wildlife never becomes talkable just by
-     * standing near a player. Uses the narrower {@code isRecognizedWorkerOrGuard} check specifically
-     * (not {@link SettlemyntsIdentityBridge#resolveOrBeginBirth}, which assigns a generic identity to
-     * literally anything) -- see that method's own doc for why.
+     * WanderingTrader} (every one gets a real Phase 5b Milestone 3 identity), a plain vanilla {@link
+     * net.minecraft.world.entity.npc.villager.Villager} (added 2026-11-05, real report: a naturally-
+     * generated village's villagers had no name and wouldn't respond at all -- {@code
+     * getClass() == Villager.class}, not {@code instanceof}, since Settlemynts' own plot-bound worker
+     * subclasses all extend {@code Villager} too and are already covered by the
+     * {@code isRecognizedWorkerOrGuard} check below; this is purely for a plain one neither Settlemynts
+     * nor this mod ever spawned itself -- Settlemynts' own {@code npc.VillagerIdentityListener} is what
+     * actually gives it a name/identity in the first place), or a real plot-bound worker/Guard
+     * recognized via {@link SettlemyntsIdentityBridge#isRecognizedWorkerOrGuard} -- deliberately NOT
+     * true for an arbitrary mob, so ordinary wildlife never becomes talkable just by standing near a
+     * player. Uses the narrower {@code isRecognizedWorkerOrGuard} check specifically (not {@link
+     * SettlemyntsIdentityBridge#resolveOrBeginBirth}, which assigns a generic identity to literally
+     * anything) -- see that method's own doc for why.
      */
     private boolean isConversational(Entity entity) {
         if (entity.hasData(NpcAttachments.CONVERSATIONAL_NPC)) {
             return true;
         }
         if (entity instanceof WanderingTrader) {
+            return true;
+        }
+        if (entity.getClass() == net.minecraft.world.entity.npc.villager.Villager.class) {
             return true;
         }
         return SettlemyntsIdentityBridge.isRecognizedWorkerOrGuard(entity);
