@@ -1,5 +1,6 @@
 package com.github.cerealklla.audyble.npc;
 
+import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -284,7 +285,25 @@ public final class NpcConversationEngine {
         String relationshipSummary = SettlemyntsIdentityBridge.getRelationshipSummary(convo.initialIdentity, playerId);
         String systemPrompt = buildSystemPrompt(npcName, backstory, keyFacts, relationshipSummary, npcConfig, settlementName);
 
-        String reply = stripStageDirections(Nuclyus.chat(systemPrompt, List.copyOf(convo.history), transcript));
+        // A registered interceptor (see NpcReplyInterceptors' own doc) gets first refusal -- lets a
+        // caller (e.g. Arryval's staged tutorial intro) supply a guaranteed, non-improvised reply
+        // for specific turns without touching Whisper/the LLM at all, while every other turn still
+        // falls through to the real conversation below exactly as before.
+        String reply = null;
+        MinecraftServer interceptServer = server;
+        ServerPlayer playerForIntercept = interceptServer != null ? interceptServer.getPlayerList().getPlayer(playerId) : null;
+        if (playerForIntercept != null) {
+            for (NpcReplyInterceptor interceptor : NpcReplyInterceptors.all()) {
+                Optional<String> intercepted = interceptor.tryIntercept(playerForIntercept, npcEntity, transcript);
+                if (intercepted.isPresent()) {
+                    reply = intercepted.get();
+                    break;
+                }
+            }
+        }
+        if (reply == null) {
+            reply = stripStageDirections(Nuclyus.chat(systemPrompt, List.copyOf(convo.history), transcript));
+        }
         if (reply.isBlank()) {
             return;
         }
@@ -297,7 +316,21 @@ public final class NpcConversationEngine {
             }
         }
         convo.lastTurnAtMillis = System.currentTimeMillis();
+        speakAndShow(playerId, npcEntityId, npcName, reply, identity);
+    }
 
+    /**
+     * Shows the reply as chat text (explicit user request, 2026-11-06: "the text version of what
+     * they say should also come through as if the NPC is typing so that players without audio can
+     * follow along") and speaks it via TTS, played back positionally on the NPC -- the common tail
+     * shared by a real LLM reply and a scripted/interceptor-supplied one.
+     */
+    private void speakAndShow(UUID playerId, UUID npcEntityId, String npcName, String reply,
+                               Optional<SettlemyntsIdentityBridge.IdentitySnapshot> identity) throws IOException, InterruptedException {
+        MinecraftServer currentServer = server;
+        if (currentServer != null && currentServer.getPlayerList().getPlayer(playerId) instanceof ServerPlayer player) {
+            player.sendSystemMessage(Component.literal(npcName + ": " + reply));
+        }
         // "FEMALE"/"MALE" (npc.NpcGender's plain enum name, see SettlemyntsIdentityBridge's own
         // doc) picks the matching voice -- defaults to male if unresolved (no Settlemynts
         // identity at all), same as this mod's own pre-gender behavior.
@@ -309,6 +342,43 @@ public final class NpcConversationEngine {
         short[] playbackPcm = PcmAudio.resample(decoded.samples(), decoded.sampleRate(), TARGET_SAMPLE_RATE);
 
         playOnNpc(npcEntityId, playbackPcm);
+    }
+
+    /**
+     * Makes {@code npcEntityId} say {@code line} to {@code playerId} right now -- not in response to
+     * anything the player said, so there's no transcript/"user" turn to record, only the line itself
+     * as a new "assistant" turn (so later real conversation has it as context). For a caller (e.g.
+     * Arryval's staged tutorial intro) that wants its own NPC to speak a guaranteed, proactive line --
+     * see {@code api.Audyble#speakScriptedLine}. Silently does nothing if the NPC or player can't be
+     * resolved right now.
+     */
+    public void speakScriptedLine(UUID playerId, UUID npcEntityId, String line) {
+        pipelineExecutor.submit(() -> {
+            try {
+                Entity npcEntity = findEntityAnywhere(npcEntityId);
+                if (npcEntity == null) {
+                    return;
+                }
+                ConversationalNpcConfig npcConfig = resolveNpcConfig(npcEntity);
+                String npcName = npcConfig != null ? npcConfig.characterName() : npcEntity.getName().getString();
+                Optional<SettlemyntsIdentityBridge.IdentitySnapshot> identity = npcEntity.level() instanceof ServerLevel npcLevel
+                        ? SettlemyntsIdentityBridge.resolveOrBeginBirth(npcLevel, npcEntity)
+                        : Optional.empty();
+                ConversationKey pairKey = new ConversationKey(npcEntityId, playerId);
+                ConversationState convo = conversations.computeIfAbsent(pairKey,
+                        k -> new ConversationState(resolveInitialIdentity(npcEntity)));
+                synchronized (convo.history) {
+                    convo.history.addLast(new OllamaClient.Turn("assistant", line));
+                    while (convo.history.size() > MAX_HISTORY_TURNS * 2) {
+                        convo.history.removeFirst();
+                    }
+                }
+                convo.lastTurnAtMillis = System.currentTimeMillis();
+                speakAndShow(playerId, npcEntityId, npcName, line, identity);
+            } catch (Exception e) {
+                AudybleMod.LOGGER.error("Audyble NPC scripted line failed", e);
+            }
+        });
     }
 
     /** World Lore + this NPC's own persisted backstory/key facts + the player's relationship summary + the character's own behavior prompt (unchanged). */

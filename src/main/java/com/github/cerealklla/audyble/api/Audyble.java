@@ -7,6 +7,8 @@ import java.util.UUID;
 import com.github.cerealklla.audyble.npc.ConversationalNpcConfig;
 import com.github.cerealklla.audyble.npc.NpcAttachments;
 import com.github.cerealklla.audyble.npc.NpcConversationEngine;
+import com.github.cerealklla.audyble.npc.NpcReplyInterceptor;
+import com.github.cerealklla.audyble.npc.NpcReplyInterceptors;
 import com.github.cerealklla.audyble.npc.PlayerPronunciationStore;
 import com.github.cerealklla.audyble.voice.MurmurPlaylistStore;
 import com.github.cerealklla.audyble.voice.MusicLibrary;
@@ -92,5 +94,23 @@ public final class Audyble {
      */
     public static boolean sayToNearestNpc(ServerPlayer player, String message) {
         return NpcConversationEngine.instance() != null && NpcConversationEngine.instance().sayToNearestNpc(player, message);
+    }
+
+    /** See {@link NpcReplyInterceptor}'s own doc -- lets a caller supply guaranteed, non-improvised replies for specific turns of its own NPC. */
+    public static void registerReplyInterceptor(NpcReplyInterceptor interceptor) {
+        NpcReplyInterceptors.register(interceptor);
+    }
+
+    /**
+     * Makes {@code npc} say {@code line} to {@code player} right now -- not in response to anything
+     * the player said (see {@code NpcConversationEngine#speakScriptedLine}'s own doc). For a caller's
+     * own proactive, guaranteed line (e.g. a greeting the instant a player comes into range), not a
+     * reply to anything. {@code npc} must already be bound conversational ({@link
+     * #bindConversationalNpc}) for this to do anything.
+     */
+    public static void speakScriptedLine(ServerPlayer player, Entity npc, String line) {
+        if (NpcConversationEngine.instance() != null) {
+            NpcConversationEngine.instance().speakScriptedLine(player.getUUID(), npc.getUUID(), line);
+        }
     }
 }
