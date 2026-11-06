@@ -1,6 +1,7 @@
 package com.github.cerealklla.audyble;
 
 import com.github.cerealklla.audyble.bridge.SettlemyntsMurmurBridge;
+import com.github.cerealklla.audyble.chat.LocalChatListener;
 import com.github.cerealklla.audyble.config.AudybleConfig;
 import com.github.cerealklla.audyble.content.AudybleEffects;
 import com.github.cerealklla.audyble.content.AudybleItems;
@@ -52,6 +53,7 @@ public class AudybleMod {
         modContainer.registerConfig(ModConfig.Type.SERVER, AudybleConfig.SPEC);
 
         NpcConversationEngine.init();
+        LocalChatListener.init();
         MurmurCrystalEngine.init();
         NeoForge.EVENT_BUS.register(new NpcStoreBootstrap());
         NpcDebugCommands.init();

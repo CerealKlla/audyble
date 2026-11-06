@@ -121,6 +121,15 @@ public final class AudybleConfig {
             .comment("How close a player must be to a conversational NPC for their speech to be captured at all.")
             .defineInRange("npcInteractionRange", 6.0, 1.0, 32.0);
 
+    // --- Local-by-default text chat, added 2026-11-06 -- explicit user direction: plain chat should
+    // only reach nearby players (and, separately, a nearby conversational NPC) by default, matching
+    // this mod's whole positional-communication theme instead of vanilla's always-global broadcast.
+    // /all is the explicit opt-in for a real server-wide broadcast -- see chat.LocalChatListener.
+
+    public static final ModConfigSpec.DoubleValue LOCAL_CHAT_RANGE = BUILDER
+            .comment("How far (blocks) a plain chat message reaches by default -- /all broadcasts to everyone instead.")
+            .defineInRange("localChatRange", 100.0, 1.0, 10000.0);
+
     public static final ModConfigSpec.IntValue NPC_SILENCE_TIMEOUT_MILLIS = BUILDER
             .comment("How long (ms) of silence ends a player's utterance and triggers STT -> LLM -> TTS.")
             .defineInRange("npcSilenceTimeoutMillis", 700, 200, 5000);
