@@ -94,22 +94,18 @@ public final class AudybleConfig {
 
     public static final ModConfigSpec.BooleanValue NPC_CONVERSATION_ENABLED = BUILDER
             .comment("Master switch for Phase 5 NPC verbal conversation. Requires Nuclyus's shared "
-                    + "Ollama LLM client (nuclyus-server.toml's own ollamaBaseUrl/ollamaModel -- moved "
-                    + "there 2026-11-05, see that mod's own config doc), a Kokoro TTS server, and a "
-                    + "Whisper STT server all reachable/configured.")
+                    + "Ollama LLM client and Kokoro TTS client (nuclyus-server.toml's own "
+                    + "ollamaBaseUrl/ollamaModel/kokoroBaseUrl -- both moved there 2026-11-05/06, see "
+                    + "that mod's own api.Nuclyus facade), and a Whisper STT server reachable/configured.")
             .define("npcConversationEnabled", false);
-
-    public static final ModConfigSpec.ConfigValue<String> KOKORO_BASE_URL = BUILDER
-            .comment("Base URL of a local Kokoro-82M TTS server exposing an OpenAI-compatible "
-                    + "/v1/audio/speech endpoint (e.g. the kokoro-fastapi project), e.g. http://127.0.0.1:8880 "
-                    + "-- use a literal IPv4 address, not 'localhost' (see ollamaBaseUrl's own comment for why).")
-            .define("kokoroBaseUrl", "http://127.0.0.1:8880");
 
     public static final ModConfigSpec.ConfigValue<String> KOKORO_VOICE_MALE = BUILDER
             .comment("Kokoro voice name for a male NPC, e.g. am_michael -- see the Kokoro project's own voice "
                     + "list. Split from a single kokoroVoice into kokoroVoiceMale/kokoroVoiceFemale 2026-11-05, "
                     + "once Settlemynts NPCs gained a real per-NPC gender (npc.NpcGender) -- see "
-                    + "npc.NpcConversationEngine for where this is picked.")
+                    + "npc.NpcConversationEngine for where this is picked. The server itself (kokoroBaseUrl) "
+                    + "moved to Nuclyus's own config 2026-11-06 -- only which voice name to use for which NPC "
+                    + "gender (domain logic) stays here.")
             .define("kokoroVoiceMale", "am_michael");
 
     public static final ModConfigSpec.ConfigValue<String> KOKORO_VOICE_FEMALE = BUILDER

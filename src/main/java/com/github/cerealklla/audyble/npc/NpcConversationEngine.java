@@ -17,6 +17,7 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.github.cerealklla.audyble.AudybleMod;
 import com.github.cerealklla.audyble.bridge.SettlemyntsIdentityBridge;
 import com.github.cerealklla.audyble.config.AudybleConfig;
+import com.github.cerealklla.nuclyus.api.Nuclyus;
 import com.github.cerealklla.nuclyus.llm.OllamaClient;
 import com.github.cerealklla.nuclyus.llm.WorldLore;
 
@@ -252,7 +253,7 @@ public final class NpcConversationEngine {
             String relationshipSummary = SettlemyntsIdentityBridge.getRelationshipSummary(convo.initialIdentity, playerId);
             String systemPrompt = buildSystemPrompt(npcName, backstory, keyFacts, relationshipSummary, npcConfig, settlementName);
 
-            String reply = stripStageDirections(OllamaClient.chat(systemPrompt, List.copyOf(convo.history), transcript));
+            String reply = stripStageDirections(Nuclyus.chat(systemPrompt, List.copyOf(convo.history), transcript));
             if (reply.isBlank()) {
                 return;
             }
@@ -272,8 +273,7 @@ public final class NpcConversationEngine {
             boolean female = identity.map(SettlemyntsIdentityBridge.IdentitySnapshot::genderName)
                     .filter("FEMALE"::equals).isPresent();
             String voice = female ? AudybleConfig.KOKORO_VOICE_FEMALE.get() : AudybleConfig.KOKORO_VOICE_MALE.get();
-            KokoroTtsClient kokoro = new KokoroTtsClient(AudybleConfig.KOKORO_BASE_URL.get(), voice);
-            byte[] ttsWav = kokoro.synthesize(reply);
+            byte[] ttsWav = Nuclyus.speak(voice, reply);
             PcmAudio.DecodedWav decoded = PcmAudio.fromWav(ttsWav);
             short[] playbackPcm = PcmAudio.resample(decoded.samples(), decoded.sampleRate(), TARGET_SAMPLE_RATE);
 
@@ -356,7 +356,7 @@ public final class NpcConversationEngine {
                     + "text (2-4 sentences, no preamble), building on the prior summary where relevant.\n"
                     + "Prior summary: " + (existingSummary.isBlank() ? "(none yet -- this is their first conversation)" : existingSummary);
 
-            String newSummary = OllamaClient.chat(summarizePrompt, List.of(), transcript.toString()).trim();
+            String newSummary = Nuclyus.chat(summarizePrompt, List.of(), transcript.toString()).trim();
             if (newSummary.isBlank()) {
                 return;
             }

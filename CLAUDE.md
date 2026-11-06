@@ -49,8 +49,10 @@ still open.
   the Radio item, Deafened/Keen Hearing status effects); `voice.AudioProcessor` does the real opus
   decode/filter/encode per pair. `api.AudybleApi`/`TreatmentModifier` is the cross-mod extension
   point the design doc asked for.
-- `npc.*` — Phase 5 scaffold (Ollama/Kokoro/Whisper HTTP clients, PCM/WAV utilities, the
-  conversation-pipeline orchestrator, a `/audyble npc bind` command). Off by default
+- `npc.*` — Phase 5 scaffold (Whisper STT client, PCM/WAV utilities, the conversation-pipeline
+  orchestrator, a `/audyble npc bind` command). The LLM and TTS clients themselves now live in
+  Nuclyus (`api.Nuclyus#chat`/`#speak`, moved there 2026-11-05/06 — see that mod's own CLAUDE.md),
+  called through that facade rather than owned here. Off by default
   (`AudybleConfig.NPC_CONVERSATION_ENABLED`), **entirely unverified** — no external LLM/TTS/STT
   server has ever actually run against this code.
 - **Confirmed live via a real `./gradlew runServer` boot** with the actual SVC mod present: clean
