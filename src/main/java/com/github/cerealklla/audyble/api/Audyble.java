@@ -113,4 +113,9 @@ public final class Audyble {
             NpcConversationEngine.instance().speakScriptedLine(player.getUUID(), npc.getUUID(), line);
         }
     }
+
+    /** See {@code npc.NpcConversationEngine#isInConversation}'s own doc. {@code false} if the pipeline hasn't started at all (e.g. the engine not yet initialized). */
+    public static boolean isInConversation(UUID playerId) {
+        return NpcConversationEngine.instance() != null && NpcConversationEngine.instance().isInConversation(playerId);
+    }
 }

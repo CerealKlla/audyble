@@ -41,6 +41,7 @@ import net.minecraft.world.entity.npc.wanderingtrader.WanderingTrader;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
+import net.neoforged.neoforge.event.server.ServerStartingEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
@@ -111,22 +112,61 @@ public final class NpcConversationEngine {
     private volatile MinecraftServer server;
     private final Map<UUID, NpcVoiceSession> activeSessions = new ConcurrentHashMap<>();
     private final Map<ConversationKey, ConversationState> conversations = new ConcurrentHashMap<>();
-    private final ExecutorService pipelineExecutor = Executors.newSingleThreadExecutor(
-            r -> new Thread(r, "audyble-npc-conversation"));
+    private volatile ExecutorService pipelineExecutor = newPipelineExecutor();
+
+    private static ExecutorService newPipelineExecutor() {
+        return Executors.newSingleThreadExecutor(r -> new Thread(r, "audyble-npc-conversation"));
+    }
 
     public void onServerStarted(VoicechatServerApi api) {
         this.api = api;
     }
 
     /**
+     * Whether {@code playerId} is currently a party to any actively-tracked conversation (see {@link
+     * #conversations}) -- added 2026-11-06 for {@code api.Audyble#isInConversation}, the real trigger
+     * Myssions' new quest-offer-review prompt reads (see that mod's own {@code
+     * bridge.AudybleConversationBridge}). A conversation's rolling state only ever expires via {@link
+     * #checkIdleConversations}' own idle timeout, so this stays true for a short while after the NPC's
+     * last line even if the player hasn't said anything back yet -- deliberately generous, matching
+     * "while an NPC is talking to you," not just "while you're actively speaking."
+     */
+    public boolean isInConversation(UUID playerId) {
+        for (ConversationKey key : conversations.keySet()) {
+            if (key.playerId().equals(playerId)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Real bug, found live 2026-11-06: {@link #init()} runs exactly once per client/server JVM
+     * (from {@code AudybleMod}'s constructor), but {@link #onServerStopping} fires on *every*
+     * integrated-server stop -- loading one world, quitting to title, then loading/creating another
+     * all within the same client session shuts {@code pipelineExecutor} down for good after the
+     * first stop, with nothing ever recreating it. Every conversational call in any later world that
+     * session then threw {@code RejectedExecutionException} from a terminated pool, confirmed live
+     * via Arryval's tutorial guide (the first thing in this suite to proactively call {@link
+     * #speakScriptedLine} the instant a world loads). Fixed by recreating the executor on every
+     * {@code ServerStartingEvent}, not just once at construction -- {@code pipelineExecutor} is now
+     * a real per-server-lifetime resource, not a per-JVM one.
+     */
+    @SubscribeEvent
+    public void onServerStarting(ServerStartingEvent event) {
+        pipelineExecutor = newPipelineExecutor();
+    }
+
+    /**
      * {@code pipelineExecutor}'s thread is never a daemon thread (the default {@link
-     * Executors#newSingleThreadExecutor} shape) and was never shut down anywhere -- confirmed live
-     * 2026-11-04 as the real cause of the dedicated server hanging for the full 60s graceful-stop
-     * window and needing a force-kill, twice in a row, right after Ollama's own HTTP timeout was
-     * deliberately widened to 120s (a slow/hung in-flight Ollama call now blocks this thread far
-     * longer, and nothing was ever telling it to stop). {@code shutdownNow()} interrupts any
-     * in-flight HTTP call immediately rather than waiting for it to finish or time out on its own.
-     * The matching shutdown for NPC birth generation's own executor moved to Settlemynts alongside
+     * Executors#newSingleThreadExecutor} shape) -- confirmed live 2026-11-04 as the real cause of
+     * the dedicated server hanging for the full 60s graceful-stop window and needing a force-kill,
+     * twice in a row, right after Ollama's own HTTP timeout was deliberately widened to 120s (a
+     * slow/hung in-flight Ollama call now blocks this thread far longer, and nothing was ever
+     * telling it to stop). {@code shutdownNow()} interrupts any in-flight HTTP call immediately
+     * rather than waiting for it to finish or time out on its own; see {@link #onServerStarting}'s
+     * own doc for why this is now paired with a matching recreation rather than being one-shot. The
+     * matching shutdown for NPC birth generation's own executor moved to Settlemynts alongside
      * {@code npc.NpcIdentityPrompting} itself, 2026-11-05.
      */
     @SubscribeEvent
@@ -396,11 +436,20 @@ public final class NpcConversationEngine {
                     + "gestures, or your surroundings (e.g. never write things like \"*pauses, looks "
                     + "around*\" or \"(clicks tongue)\") -- if it wouldn't be heard as speech, don't write it.\n";
 
-    private static final java.util.regex.Pattern STAGE_DIRECTION = java.util.regex.Pattern.compile("\\*[^*]*\\*");
+    /**
+     * Real report, 2026-11-06: "NPCs are still doing stage directions and emotes in their dialog.
+     * like 'blah blah (pauses) blah blah'" -- {@link #SPOKEN_DIALOGUE_ONLY_INSTRUCTION} already names
+     * both forms as examples to avoid ("*pauses, looks around*" AND "(clicks tongue)"), but this
+     * defensive strip only ever matched the asterisk-wrapped one, not the parenthetical one the
+     * prompt itself also calls out -- widened to match both, plus bracket-wrapped (Whisper's own
+     * non-speech-tag convention, same shape, worth catching here too for symmetry).
+     */
+    private static final java.util.regex.Pattern STAGE_DIRECTION =
+            java.util.regex.Pattern.compile("\\*[^*]*\\*|\\([^)]*\\)|\\[[^\\]]*\\]");
 
-    /** Defensive cleanup for whenever the model still slips into asterisk-wrapped action narration despite {@link #SPOKEN_DIALOGUE_ONLY_INSTRUCTION}. */
+    /** Defensive cleanup for whenever the model still slips into action narration despite {@link #SPOKEN_DIALOGUE_ONLY_INSTRUCTION}. */
     private static String stripStageDirections(String reply) {
-        return STAGE_DIRECTION.matcher(reply).replaceAll("").trim();
+        return STAGE_DIRECTION.matcher(reply).replaceAll("").replaceAll("\\s{2,}", " ").trim();
     }
 
     private static String buildSystemPrompt(String npcName, String backstory, String keyFacts,
